@@ -1,6 +1,10 @@
 node_modules/
 packages/*/node_modules/
 
+# macOS resource forks
+._*
+.DS_Store
+
 *.log
 .DS_Store
 *.tsbuildinfo
