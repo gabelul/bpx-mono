@@ -1,0 +1,30 @@
+node_modules/
+packages/*/node_modules/
+
+*.log
+.DS_Store
+*.tsbuildinfo
+*.cpuprofile
+
+# Pi session state
+.pi/
+
+# Environment
+.env
+.env.local
+
+# Editor
+.vscode/
+.zed/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code local session state
+.claude/
+
+# npm
+.npm/
+coverage/
+.nyc_output/

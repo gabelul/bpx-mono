@@ -1,0 +1,49 @@
+{
+  "name": "@gabelul/bpx-consult",
+  "version": "0.1.0",
+  "description": "Pi extension. A council of AI advisors — consult one model or run a full multi-model consensus before you commit to a direction.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "bpx",
+    "advisor",
+    "council",
+    "consensus",
+    "multi-model"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "author": "gabelul",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gabelul/bpx-mono.git",
+    "directory": "packages/bpx-consult"
+  },
+  "homepage": "https://github.com/gabelul/bpx-mono/tree/main/packages/bpx-consult#readme",
+  "bugs": {
+    "url": "https://github.com/gabelul/bpx-mono/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "files": [
+    "index.ts",
+    "src/",
+    "prompts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
