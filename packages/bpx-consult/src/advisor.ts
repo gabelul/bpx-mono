@@ -62,6 +62,8 @@ export interface ConsultCallInput {
 	messages: Message[];
 	thinkingLevel?: ThinkingLevel;
 	signal: AbortSignal | undefined;
+	/** Session id for prompt-cache routing on repeated consultations. Optional. */
+	sessionId?: string;
 }
 
 export interface ConsultCallResult {
@@ -90,7 +92,7 @@ export async function callAdvisor(input: ConsultCallInput): Promise<ConsultCallR
 	const response = await completeSimple(
 		advisor.model,
 		{ systemPrompt, messages, tools: [] },
-		{ apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: thinkingLevel },
+		{ apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: thinkingLevel, sessionId: input.sessionId },
 	);
 
 	const text = response.content
@@ -98,6 +100,25 @@ export async function callAdvisor(input: ConsultCallInput): Promise<ConsultCallR
 		.map((c) => c.text)
 		.join("\n")
 		.trim();
+
+	// Reasoning models sometimes reply with thinking blocks but no text. Fall
+	// back to the thinking content rather than reporting an empty response — the
+	// advisor did speak, just in its reasoning channel. Mirrors pi-advisor.
+	if (!text) {
+		const thinking = response.content
+			.filter((c): c is { type: "thinking"; thinking: string } => c.type === "thinking" && typeof (c as { thinking?: string }).thinking === "string")
+			.map((c) => (c as { thinking: string }).thinking)
+			.join("\n")
+			.trim();
+		if (thinking) {
+			return {
+				text: `(reasoning)\n${thinking}`,
+				usage: response.usage ? { input: response.usage.input, output: response.usage.output, total: response.usage.totalTokens } : undefined,
+				stopReason: response.stopReason,
+				errorMessage: response.errorMessage,
+			};
+		}
+	}
 
 	return {
 		text,

@@ -30,17 +30,17 @@ const BUDGET: ContextBudget = {
 // ---------------------------------------------------------------------------
 
 describe("estimateTokens", () => {
-	it("≈ 4 chars per token, rounded up", () => {
+	it("is deliberately conservative (overestimates, the safe direction)", () => {
+		// 3 chars/token × 1.15 safety factor. ceil(400/3 * 1.15) = ceil(153.3) = 154
 		expect(estimateTokens("")).toBe(0);
-		expect(estimateTokens("abcd")).toBe(1);
-		expect(estimateTokens("abcde")).toBe(2); // 5/4 = 1.25 → ceil 2
-		expect(estimateTokens("a".repeat(400))).toBe(100);
+		expect(estimateTokens("abcd")).toBeGreaterThanOrEqual(1);
+		expect(estimateTokens("a".repeat(400))).toBe(154);
 	});
 });
 
 describe("estimateMessageTokens", () => {
 	it("counts string user content", () => {
-		expect(estimateMessageTokens(userText("a".repeat(400)))).toBe(100);
+		expect(estimateMessageTokens(userText("a".repeat(400)))).toBe(154);
 	});
 	it("counts assistant text + toolCall args", () => {
 		const msg = assistantText("a".repeat(40));
@@ -191,16 +191,14 @@ describe("fitToWindow", () => {
 		expect(fit.messages.length).toBeGreaterThanOrEqual(1);
 	});
 
-	it("honours keepFirst by retaining the first message", () => {
+	it("honours keepFirst by retaining the first message when there's room", () => {
 		const msgs = Array.from({ length: 15 }, (_, i) => userText(`head-${i} ` + "b".repeat(396)));
-		const fit = fitToWindow(msgs, BUDGET, 500);
+		// Budget 700: head (2 msgs ≈ 310) + marker (~58) + 1 tail (≈155) = ~523 fits,
+		// so head-0 survives. At 500 it can't, and head is correctly dropped.
+		const fit = fitToWindow(msgs, BUDGET, 700);
 		const first = fit.messages[0];
 		const firstText = typeof first.content === "string" ? first.content : "";
-		// Either the real first message survived, or (under extreme pressure) we
-		// kept only the tail — assert the realistic case where head survives.
-		if (fit.omittedCount > 0) {
-			expect(firstText).toContain("head-0");
-		}
+		expect(firstText).toContain("head-0");
 	});
 });
 

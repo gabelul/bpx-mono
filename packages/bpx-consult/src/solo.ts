@@ -38,9 +38,18 @@ import {
 	msgConsulting,
 } from "./messages.js";
 
-// Load the system prompt once. Bundled at prompts/advisor-system.txt.
+// Load the system prompt once, with a fallback so a missing/unreadable file
+// never bricks the extension at import time. Bundled at prompts/advisor-system.txt.
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ADVISOR_SYSTEM_PROMPT = readFileSync(join(__dirname, "..", "prompts", "advisor-system.txt"), "utf-8").trim();
+const ADVISOR_SYSTEM_PROMPT = (() => {
+	const fallback =
+		"You are an advisor model consulted mid-task by a coding executor. Return a PLAN, a CORRECTION, or a STOP signal. Be concrete, cite specifics, never call tools, never manufacture agreement.";
+	try {
+		return readFileSync(join(__dirname, "..", "prompts", "advisor-system.txt"), "utf-8").trim() || fallback;
+	} catch {
+		return fallback;
+	}
+})();
 
 export interface SoloDetails {
 	advisorModel: string;
@@ -117,6 +126,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 			messages: fit.messages,
 			thinkingLevel,
 			signal,
+			sessionId: ctx.sessionManager.getSessionId(),
 		});
 
 		const baseDetails: SoloDetails = {

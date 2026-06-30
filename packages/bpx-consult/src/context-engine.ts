@@ -55,19 +55,29 @@ export interface FitResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Rough token estimate. 4 chars/token is the standard heuristic for mixed
- * English+code; it errs slightly high, which is the safe direction for a fit
- * check (we'd rather under-pack than overflow). Cheap, allocation-free.
+ * Rough token estimate. The ratio is deliberately conservative.
  *
- * We don't pull in a real tokenizer (tiktoken etc.) because (a) it's a heavy
- * native dep for an estimate, (b) every advisor provider tokenizes differently
- * so there's no single correct answer, and (c) the heuristic only needs to be
- * conservative enough that the cap+window pass lands under budget with margin.
+ * The often-cited 4 chars/token is the tiktoken average for English prose.
+ * But the bulk of what we forward — tool arguments, tool results, code —
+ * tokenizes DENSER (closer to 3-3.5 chars/token). Using 4 would UNDERESTIMATE
+ * tokens on code-heavy sessions, causing us to pack more than fits and
+ * overflow the advisor window — which reopens the exact §P bug we exist to fix.
+ *
+ * So we use 3 chars/token (overestimates tokens for prose, the safe direction)
+ * and apply a 1.15 safety factor on top for provider-tokenizer variance.
+ * Under-packing is cheap; overflow defeats the whole point of this module.
+ *
+ * No real tokenizer (tiktoken etc.) because (a) heavy native dep for an
+ * estimate, (b) every provider tokenizes differently, (c) the heuristic only
+ * needs to be conservative enough that the cap+window pass lands under budget
+ * with margin.
  */
-const CHARS_PER_TOKEN = 4;
+const CHARS_PER_TOKEN = 3;
+const SAFETY_FACTOR = 1.15;
 
 export function estimateTokens(text: string): number {
-	return Math.ceil(text.length / CHARS_PER_TOKEN);
+	if (!text) return 0;
+	return Math.ceil((text.length / CHARS_PER_TOKEN) * SAFETY_FACTOR);
 }
 
 /** Sum tokens across every text-bearing field of a message. */
@@ -210,9 +220,10 @@ export function fitToWindow(messages: Message[], budget: ContextBudget, maxInput
 
 	const head = messages.slice(0, keepFirst);
 
-	// Shrink the tail until head + marker + tail fits. Floor at 1 so we always
-	// retain the single most recent message.
-	while (keepLast > 1) {
+	// Shrink the tail until head + marker + tail fits. Test down to keepLast=1
+	// (a single tail message) before falling through to the last-resort path —
+	// otherwise we'd skip a fit that retains the head and lose it unnecessarily.
+	while (keepLast >= 1) {
 		const tail = messages.slice(-keepLast);
 		const omittedCount = messages.length - keepFirst - keepLast;
 		const marker = omittedMarker(omittedCount);
@@ -241,13 +252,27 @@ function omittedMarker(omittedCount: number): UserMessage {
 	};
 }
 
-/** When even one message won't fit, clamp its text down to the remaining budget. */
+/**
+ * When even one message won't fit, clamp its text down to the remaining budget.
+ * Self-correcting: because estimateTokens applies a safety factor, clamping by
+ * chars then re-estimating can overshoot. So we clamp, check the estimate, and
+ * halve until it genuinely fits — never trust the char math alone on the
+ * last-resort path, which is exactly where overflow would reopen §P.
+ */
 function clampSurvivor(msg: Message, remainingTokenBudget: number): Message {
-	const maxChars = Math.max(64, remainingTokenBudget * CHARS_PER_TOKEN);
-	const text = stringifyMessageForEstimate(msg);
-	const clamped = clampText(text, maxChars);
-	// Return as a single text user message — we've already lost structure, honesty
-	// about that is better than a half-mangled typed payload.
+	let maxChars = Math.max(64, Math.floor((remainingTokenBudget * CHARS_PER_TOKEN) / SAFETY_FACTOR));
+	const original = stringifyMessageForEstimate(msg);
+	let clamped = clampText(original, maxChars);
+	// Guard: if the re-estimate still overshoots (ceil rounding, provider variance),
+	// keep shrinking until it fits. Bounded — maxChars collapses fast.
+	let guard = 0;
+	while (estimateTokens(clamped) > remainingTokenBudget && maxChars > 32 && guard < 20) {
+		maxChars = Math.floor(maxChars * 0.7);
+		clamped = clampText(original, maxChars);
+		guard++;
+	}
+	// Return as a single text user message — structure is already lost at this
+	// point, honesty about that beats a half-mangled typed payload.
 	return { role: "user", content: clamped, timestamp: "timestamp" in msg ? msg.timestamp : Date.now() };
 }
 
