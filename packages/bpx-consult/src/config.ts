@@ -205,6 +205,17 @@ export const DEFAULT_CONFIG: BpxConsultConfig = {
 		},
 		debate: { advocate: "architect", critic: "critic", rounds: 2 },
 	},
+	// Per-persona default models. CRITICAL: members must NOT all share one model/tier,
+	// and should avoid sharing the executor's model — parallel calls to the same
+	// free-tier provider trip QPM rate limits and silently kill members (caught
+	// in live testing). Default roster spreads across Anthropic tiers so the
+	// out-of-box council survives a parallel fan-out. Users with only one
+	// provider authed should override this to that provider's distinct tiers.
+	personas: {
+		architect: { defaultModel: "anthropic/claude-opus-4-6", thinkingLevel: "high" },  // strong, for the design-for seat
+		critic: { defaultModel: "anthropic/claude-sonnet-4-6", thinkingLevel: "high" },    // different tier, forces genuine critique
+		simplifier: { defaultModel: "anthropic/claude-haiku-4-5", thinkingLevel: "medium" }, // cheap+fast, questions complexity
+	},
 	triggers: { onDone: false, whenStuck: 3 },
 	feedbackMode: "steer",
 	contextBudget: {

@@ -165,6 +165,14 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 		},
 	});
 
+	// Provider-collision warning: if two or more resolved members share a provider,
+	// parallel calls can trip that provider's QPM rate limits and silently kill
+	// members (caught in live testing — two google/gemini-flash members, one died).
+	// Not a crash, but the user should know their roster is fragile. We warn rather
+	// than force-stagger because a paid tier with headroom can handle it; the user
+	// is the one who knows their provider's limits.
+	warnOnProviderCollision(ctx, memberAdvisors);
+
 	// Fan out — each member is a callAdvisor with its persona prompt + model.
 	// Each member gets its OWN AbortController, linked to the parent ctx.signal,
 	// so a member's own timeout/circuit-breaker drops only that member — not
@@ -365,4 +373,25 @@ function ok(text: string, details: CouncilDetails): AgentToolResult<CouncilDetai
 
 function err(text: string, details: CouncilDetails): AgentToolResult<CouncilDetails> {
 	return { content: [{ type: "text", text }], details };
+}
+
+/**
+ * Warn (non-blocking) when two or more council members share a provider.
+ * Parallel calls to the same provider can trip QPM rate limits and silently
+ * kill members — seen in live testing. The warning names the colliding
+ * provider and the members so the user can fix the roster.
+ */
+function warnOnProviderCollision(ctx: ExtensionContext, members: Array<{ persona: Persona; advisor: ResolvedAdvisor }>): void {
+	const byProvider = new Map<string, string[]>();
+	for (const m of members) {
+		const p = m.advisor.model.provider;
+		byProvider.set(p, [...(byProvider.get(p) ?? []), m.persona.name]);
+	}
+	const collisions = [...byProvider.entries()].filter(([, names]) => names.length > 1);
+	if (collisions.length === 0) return;
+	const detail = collisions.map(([p, names]) => `${p} (${names.join(", ")})`).join("; ");
+	ctx.ui.notify(
+		`bpx-consult: council members share a provider [${detail}]. Parallel calls may trip rate limits — consider distinct providers or tiers. See SPEC §V.`,
+		"warning",
+	);
 }
