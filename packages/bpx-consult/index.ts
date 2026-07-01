@@ -44,7 +44,7 @@ function registerConsultTool(pi: ExtensionAPI): void {
 		parameters: ConsultParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const config = loadConfig();
+			const config = loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
 
 			// Disabled for this executor model? Bail with a short explanation so
 			// the executor knows consult is intentionally off, not broken.
@@ -81,7 +81,7 @@ function registerConsultCommand(pi: ExtensionAPI): void {
 		async handler(_args, ctx) {
 			// Minimal v1: status read-out. The full fuzzy model-picker (lifted from
 			// rpiv-advisor/advisor-ui.ts + fuzzy.ts) lands with the picker step.
-			const config = loadConfig();
+			const config = loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
 			const solo = config.modes?.solo;
 			const lines = [
 				`bpx-consult status`,

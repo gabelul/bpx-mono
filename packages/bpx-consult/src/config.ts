@@ -236,25 +236,80 @@ export function bpxConfigPath(): string {
 	return join(base, "bpx-consult.json");
 }
 
+/**
+ * Project-local config path: `<cwd>/.pi/bpx-consult.json`.
+ *
+ * SPEC §X precedence is env > project (.pi, trusted) > global > defaults.
+ * Project-local is only honoured when the project is trusted (pi's trust model
+ * — an untrusted repo must not be able to silently reconfigure the advisor).
+ * The caller passes trust state from ctx.isProjectTrusted().
+ */
+export function projectConfigPath(cwd: string): string {
+	return join(cwd, ".pi", "bpx-consult.json");
+}
+
 // ---------------------------------------------------------------------------
 // Load / save
 // ---------------------------------------------------------------------------
 
+/** Options for loadConfig. Project-local config is only read when trusted. */
+export interface LoadConfigOptions {
+	/** Current working directory (for project-local config discovery). */
+	cwd?: string;
+	/** Whether the project is trusted (ctx.isProjectTrusted()). Defaults true. */
+	projectTrusted?: boolean;
+}
+
 /**
  * Load, clean, and validate the config against the schema.
  *
- * Fail-soft: missing file, malformed JSON, or validation failure all collapse
- * to the built-in defaults rather than throwing — an unreadable config must
- * never break the extension at startup. Mirrors rpiv-config's own contract.
+ * Precedence (SPEC §X): project (.pi, trusted) > global > defaults. Project
+ * config is deep-merged ON TOP of global, so a project can override e.g.
+ * personas.solo.model without re-stating the whole file. Both layers pass
+ * through validateConfig independently so a malformed project config can't
+ * corrupt a valid global one — the bad layer just collapses to {}.
  *
- * Defaults are re-asserted after validation because TypeBox's Value.Create
- * only emits schema-declared defaults (we declare none inline); every field
- * that must exist comes from DEFAULT_CONFIG via a shallow-per-section merge.
+ * Fail-soft: missing files, malformed JSON, or validation failures all collapse
+ * to defaults rather than throwing — an unreadable config must never break the
+ * extension at startup.
  */
-export function loadConfig(): BpxConsultConfig {
-	const raw = loadJsonConfig<unknown>(bpxConfigPath());
-	const validated = validateConfig(BpxConsultConfigSchema as TObject, raw);
+export function loadConfig(options: LoadConfigOptions = {}): BpxConsultConfig {
+	const globalRaw = loadJsonConfig<unknown>(bpxConfigPath());
+	let mergedRaw = globalRaw;
+
+	const trusted = options.projectTrusted ?? true;
+	if (trusted && options.cwd) {
+		const pPath = projectConfigPath(options.cwd);
+		const projectRaw = loadJsonConfig<unknown>(pPath);
+		mergedRaw = deepMerge(globalRaw, projectRaw);
+	}
+
+	const validated = validateConfig(BpxConsultConfigSchema as TObject, mergedRaw);
 	return mergeDefaults(validated);
+}
+
+/**
+ * Shallow-per-section deep merge for config objects. Project wins at the leaf;
+ * arrays replace (not concat) — council.members in project replaces global's.
+ * Unknown top-level keys are ignored (validateConfig strips them anyway).
+ */
+function deepMerge(global: unknown, project: unknown): unknown {
+	if (!isObject(global)) return isObject(project) ? project : {};
+	if (!isObject(project)) return global;
+	const out: Record<string, unknown> = { ...global };
+	for (const [k, pv] of Object.entries(project as Record<string, unknown>)) {
+		const gv = (global as Record<string, unknown>)[k];
+		if (isObject(gv) && isObject(pv)) {
+			out[k] = deepMerge(gv, pv);
+		} else {
+			out[k] = pv;
+		}
+	}
+	return out;
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+	return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
 /** Persist config. Returns true on successful write (see saveJsonConfig contract). */

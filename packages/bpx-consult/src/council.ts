@@ -99,16 +99,37 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	// bail early with a clear error if a persona's model is missing.
 	const sessionId = ctx.sessionManager.getSessionId();
 	const memberAdvisors: Array<{ persona: Persona; advisor: ResolvedAdvisor }> = [];
+	// Members whose model failed to resolve are pre-failed here rather than
+	// aborting the whole council. One bad model (typo, deprovisioned, wrong
+	// provider) must not kill the other members — that's the isolation the
+	// per-member design is for. The pre-failed entries flow into the final
+	// results alongside the settled ones, so they count against success_ratio
+	// in the confidence score (honest about the partial failure).
+	const preFailed: MemberResult[] = [];
 	for (const persona of personas) {
 		const modelKey = persona.defaultModel ?? config.modes?.solo?.model;
 		const advisor = resolveAdvisor(ctx, modelKey);
 		if (!advisor) {
-			return err(
-				`Could not resolve model "${modelKey ?? "(none)"}" for persona ${persona.name}.`,
-				{ mode: "council", members: [], synthesizer: synth.label, confidence: 0 },
-			);
+			preFailed.push({
+				persona: persona.name,
+				stance: persona.stance,
+				model: modelKey ?? "(none)",
+				status: "error",
+				text: "",
+				errorMessage: `Could not resolve model "${modelKey ?? "(none)"}" for persona ${persona.name}.`,
+				alignment: 0,
+			});
+			continue;
 		}
 		memberAdvisors.push({ persona, advisor });
+	}
+
+	// If EVERY member failed to resolve, bail — there's no council to run.
+	if (memberAdvisors.length === 0) {
+		return err(
+			`No council members could resolve their models:\n${preFailed.map((r) => "- " + r.errorMessage).join("\n")}`,
+			{ mode: "council", members: preFailed.map((r) => ({ persona: r.persona, model: r.model, status: r.status })), synthesizer: synth.label, confidence: 0 },
+		);
 	}
 
 	// Build the shared context once, fitted to the SMALLEST window in the council.
@@ -156,17 +177,20 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	const settled = parallel
 		? await Promise.allSettled(memberTasks)
 		: await runSequential(memberTasks);
-	const memberResults: MemberResult[] = settled.map((s) =>
-		s.status === "fulfilled" ? s.value : {
-			persona: "(unknown)",
-			stance: "neutral",
-			model: "(unknown)",
-			status: "error",
-			text: "",
-			errorMessage: s.reason instanceof Error ? s.reason.message : String(s.reason),
-			alignment: 0,
-		},
-	);
+	const memberResults: MemberResult[] = [
+		...preFailed,
+		...settled.map((s): MemberResult =>
+			s.status === "fulfilled" ? s.value : {
+				persona: "(unknown)",
+				stance: "neutral",
+				model: "(unknown)",
+				status: "error",
+				text: "",
+				errorMessage: s.reason instanceof Error ? s.reason.message : String(s.reason),
+				alignment: 0,
+			}
+	),
+];
 
 	const confidence = computeConfidence(memberResults);
 	const disagreement = detectDisagreement(memberResults);
