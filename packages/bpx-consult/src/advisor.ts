@@ -64,6 +64,8 @@ export interface ConsultCallInput {
 	signal: AbortSignal | undefined;
 	/** Session id for prompt-cache routing on repeated consultations. Optional. */
 	sessionId?: string;
+	/** Cap on the advisor's response tokens. Enforces responseReserveTokens on the output side. Optional. */
+	maxTokens?: number;
 }
 
 export interface ConsultCallResult {
@@ -92,7 +94,7 @@ export async function callAdvisor(input: ConsultCallInput): Promise<ConsultCallR
 	const response = await completeSimple(
 		advisor.model,
 		{ systemPrompt, messages, tools: [] },
-		{ apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: thinkingLevel, sessionId: input.sessionId },
+		{ apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: thinkingLevel, sessionId: input.sessionId, maxTokens: input.maxTokens },
 	);
 
 	const text = response.content

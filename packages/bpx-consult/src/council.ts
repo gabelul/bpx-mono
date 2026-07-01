@@ -93,7 +93,27 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 		);
 	}
 
-	// Build the shared context once — every member sees the same fitted transcript.
+	// Resolve member models UPFRONT so we can fit the shared context to the
+	// smallest window among them + synthesizer. §I: every member must fit, no
+	// exceptions. Resolving here (instead of inside the fan-out) also lets us
+	// bail early with a clear error if a persona's model is missing.
+	const sessionId = ctx.sessionManager.getSessionId();
+	const memberAdvisors: Array<{ persona: Persona; advisor: ResolvedAdvisor }> = [];
+	for (const persona of personas) {
+		const modelKey = persona.defaultModel ?? config.modes?.solo?.model;
+		const advisor = resolveAdvisor(ctx, modelKey);
+		if (!advisor) {
+			return err(
+				`Could not resolve model "${modelKey ?? "(none)"}" for persona ${persona.name}.`,
+				{ mode: "council", members: [], synthesizer: synth.label, confidence: 0 },
+			);
+		}
+		memberAdvisors.push({ persona, advisor });
+	}
+
+	// Build the shared context once, fitted to the SMALLEST window in the council.
+	// Every member sees the same payload, and the smallest-window member is
+	// guaranteed to fit — that's what closes the §I breach.
 	const contextBudget = config.contextBudget as ContextBudget;
 	const { messages: sessionMessages } = buildSessionContext(
 		ctx.sessionManager.getEntries(),
@@ -102,16 +122,14 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	const branchMessages: Message[] = convertToLlm(sessionMessages);
 	const directive = question?.trim() ? `Specific question from the executor: ${question.trim()}` : undefined;
 
+	const minWindow = Math.min(
+		synth.model.contextWindow,
+		...memberAdvisors.map((m) => m.advisor.model.contextWindow),
+	);
+
 	const fit = buildConsultContext({
-		// Fit to the SMALLEST member window so every member sees the same payload.
-		// (We resolve each member's window below; for simplicity v1 fits to the
-		// synthesizer's window, which is typically the largest — members get the
-		// same content and their own providers handle it. If a member's window is
-		// smaller than the payload, callAdvisor's provider will reject it; that
-		// surfaces as a per-member error rather than a crash. v1.1 can re-fit per
-		// member once we have a real per-call budget read.)
 		sessionMessages: branchMessages,
-		advisorContextWindow: synth.model.contextWindow,
+		advisorContextWindow: minWindow,
 		budget: contextBudget,
 		directive,
 	});
@@ -127,57 +145,11 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	});
 
 	// Fan out — each member is a callAdvisor with its persona prompt + model.
-	const sessionId = ctx.sessionManager.getSessionId();
-	const memberTasks = personas.map(async (persona): Promise<MemberResult> => {
-		const modelKey = persona.defaultModel ?? config.modes?.solo?.model;
-		const advisor: ResolvedAdvisor | undefined = resolveAdvisor(ctx, modelKey);
-		if (!advisor) {
-			return {
-				persona: persona.name,
-				stance: persona.stance,
-				model: modelKey ?? "(none)",
-				status: "error",
-				text: "",
-				errorMessage: `Could not resolve model "${modelKey ?? "(none)"}" for persona ${persona.name}.`,
-				alignment: 0,
-			};
-		}
-		const thinkingLevel: ThinkingLevel | undefined = persona.thinkingLevel;
-		try {
-			const result = await callAdvisor({
-				ctx,
-				advisor,
-				systemPrompt: personaSystemPrompt(persona),
-				messages: fit.messages,
-				thinkingLevel,
-				signal,
-				sessionId,
-			});
-			const status: "ok" | "error" = result.stopReason === "error" || result.stopReason === "aborted" || !result.text
-				? "error"
-				: "ok";
-			return {
-				persona: persona.name,
-				stance: persona.stance,
-				model: advisor.label,
-				status,
-				text: result.text,
-				errorMessage: status === "error" ? result.errorMessage ?? result.stopReason : undefined,
-				alignment: status === "ok" ? validateStance(result.text, persona.stance) : 0,
-				usage: result.usage,
-			};
-		} catch (e) {
-			const message = e instanceof Error ? e.message : String(e);
-			return {
-				persona: persona.name,
-				stance: persona.stance,
-				model: advisor.label,
-				status: "error",
-				text: "",
-				errorMessage: message,
-				alignment: 0,
-			};
-		}
+	// Each member gets its OWN AbortController, linked to the parent ctx.signal,
+	// so a member's own timeout/circuit-breaker drops only that member — not
+	// its siblings. (rpiv-btw "Decision 8" pattern, per Claude's review.)
+	const memberTasks = memberAdvisors.map(({ persona, advisor }): Promise<MemberResult> => {
+		return runMember(ctx, persona, advisor, fit.messages, contextBudget, signal, sessionId);
 	});
 
 	// Promise.allSettled semantics: one flaky member never crashes the council.
@@ -238,6 +210,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 			thinkingLevel: councilConfig?.synthesizer?.thinkingLevel,
 			signal,
 			sessionId,
+			maxTokens: contextBudget.responseReserveTokens,
 		});
 
 		const details: CouncilDetails = {
@@ -280,6 +253,75 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Run ONE council member with its own AbortController.
+ *
+ * The controller is linked to the parent ctx.signal via addEventListener, so a
+ * user-initiated abort (or session end) still propagates to every member. But
+ * a member-specific timeout/circuit-breaker can abort() this controller alone
+ * without touching its siblings — that's the rpiv-btw "Decision 8" pattern.
+ *
+ * (No per-member timeout is wired yet in v1; the structure is here so the
+ * circuit-breaker backoff step can drop one member cleanly without rewriting
+ * the fan-out.)
+ */
+function linkSignal(parent: AbortSignal | undefined): AbortSignal {
+	if (!parent) return new AbortController().signal;
+	// If the parent is already aborted, return an aborted signal immediately.
+	if (parent.aborted) return parent;
+	const ctrl = new AbortController();
+	const onAbort = (reason?: unknown) => ctrl.abort(reason);
+	parent.addEventListener("abort", () => onAbort(parent.reason), { once: true });
+	return ctrl.signal;
+}
+
+async function runMember(
+	ctx: ExtensionContext,
+	persona: Persona,
+	advisor: ResolvedAdvisor,
+	messages: Message[],
+	contextBudget: ContextBudget,
+	parentSignal: AbortSignal | undefined,
+	sessionId: string | undefined,
+): Promise<MemberResult> {
+	const thinkingLevel: ThinkingLevel | undefined = persona.thinkingLevel;
+	try {
+		const result = await callAdvisor({
+			ctx,
+			advisor,
+			systemPrompt: personaSystemPrompt(persona),
+			messages,
+			thinkingLevel,
+			signal: linkSignal(parentSignal),
+			sessionId,
+			maxTokens: contextBudget.responseReserveTokens,
+		});
+		const status: "ok" | "error" =
+			result.stopReason === "error" || result.stopReason === "aborted" || !result.text ? "error" : "ok";
+		return {
+			persona: persona.name,
+			stance: persona.stance,
+			model: advisor.label,
+			status,
+			text: result.text,
+			errorMessage: status === "error" ? result.errorMessage ?? result.stopReason : undefined,
+			alignment: status === "ok" ? validateStance(result.text, persona.stance) : 0,
+			usage: result.usage,
+		};
+	} catch (e) {
+		const message = e instanceof Error ? e.message : String(e);
+		return {
+			persona: persona.name,
+			stance: persona.stance,
+			model: advisor.label,
+			status: "error",
+			text: "",
+			errorMessage: message,
+			alignment: 0,
+		};
+	}
+}
 
 async function runSequential<T>(tasks: Array<Promise<T>>): Promise<PromiseSettledResult<T>[]> {
 	const results: PromiseSettledResult<T>[] = [];

@@ -127,6 +127,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 			thinkingLevel,
 			signal,
 			sessionId: ctx.sessionManager.getSessionId(),
+			maxTokens: contextBudget.responseReserveTokens,
 		});
 
 		const baseDetails: SoloDetails = {
