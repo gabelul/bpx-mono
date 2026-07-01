@@ -12,6 +12,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { isDisabledForModel, loadConfig } from "./src/config.js";
 import { executeSolo } from "./src/solo.js";
+import { executeCouncil } from "./src/council.js";
 import {
 	CONSULT_DESCRIPTION,
 	CONSULT_TOOL_NAME,
@@ -62,10 +63,13 @@ function registerConsultTool(pi: ExtensionAPI): void {
 
 			const mode = params.mode ?? config.defaultMode ?? "solo";
 
-			// Only solo is wired so far. Council/debate/gut-check land in later
-			// steps; until then every mode falls through to solo so the tool is
-			// always usable. (Removed once each mode lands.)
-			void mode;
+			if (mode === "council") {
+				return executeCouncil({ ctx, config, signal, onUpdate, question: params.question });
+			}
+
+			// solo/gut-check/debate: solo wired; debate fast-follow. Gut-check is a
+			// cheap solo entry once modes.gutCheck is honored — for now it routes to
+			// solo (still useful, just not terse-tagged yet).
 			return executeSolo({ ctx, config, signal, onUpdate, question: params.question });
 		},
 	});
