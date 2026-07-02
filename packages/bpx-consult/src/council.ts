@@ -298,7 +298,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
  * circuit-breaker backoff step can drop one member cleanly without rewriting
  * the fan-out.)
  */
-function linkSignal(parent: AbortSignal | undefined): AbortSignal {
+export function linkSignal(parent: AbortSignal | undefined): AbortSignal {
 	if (!parent) return new AbortController().signal;
 	// If the parent is already aborted, return an aborted signal immediately.
 	if (parent.aborted) return parent;

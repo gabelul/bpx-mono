@@ -13,6 +13,7 @@ import { Type } from "typebox";
 import { isDisabledForModel, loadConfig } from "./src/config.js";
 import { executeSolo } from "./src/solo.js";
 import { executeCouncil } from "./src/council.js";
+import { executeDebate } from "./src/debate.js";
 import { registerTriggers } from "./src/triggers.js";
 import {
 	CONSULT_DESCRIPTION,
@@ -67,6 +68,9 @@ function registerConsultTool(pi: ExtensionAPI): void {
 
 			if (mode === "council") {
 				return executeCouncil({ ctx, config, signal, onUpdate, question: params.question });
+			}
+			if (mode === "debate") {
+				return executeDebate({ ctx, config, signal, onUpdate, question: params.question });
 			}
 
 			// solo/gut-check/debate: solo wired; debate fast-follow. Gut-check is a
