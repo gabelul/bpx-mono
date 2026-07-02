@@ -115,6 +115,8 @@ Mapped per-persona under `backends`. A council can mix inline and cli members fr
 
 Triggers respect a per-session `autoReviewedThisRound` flag (same name as pi-extensions) so they don't fire repeatedly within one round.
 
+**Auto-triggers always run solo, regardless of `defaultMode`.** An auto-fire is a safety net, not a deliberate consultation — a council would burn 3+ model calls + synthesis per trigger, a surprise-quota footgun on a loop or repeated errors. Council is reserved for explicit invocation (`mode: "council"` on the tool, or `/consult council`).
+
 ## §F — Feedback injection
 
 How the advisor's response reaches the executor:

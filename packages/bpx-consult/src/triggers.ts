@@ -33,7 +33,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { BpxConsultConfig } from "./config.js";
 import { loadConfig } from "./config.js";
 import { executeSolo } from "./solo.js";
-import { executeCouncil } from "./council.js";
 import { CONSULT_TOOL_NAME } from "./messages.js";
 
 interface TriggerState {
@@ -166,13 +165,12 @@ async function runTriggeredConsult(
 ): Promise<void> {
 	state.autoRunning = true;
 	try {
-		const mode = config.defaultMode ?? "solo";
-		// A triggered consult uses whichever mode is configured. The signal comes
-		// from ctx — if the user aborts, the in-flight consult aborts too.
-		const result =
-			mode === "council"
-				? await executeCouncil({ ctx, config, signal: ctx.signal, onUpdate: undefined })
-				: await executeSolo({ ctx, config, signal: ctx.signal, onUpdate: undefined });
+		// Auto-triggers ALWAYS run solo, regardless of defaultMode (§T). Rationale:
+		// an auto-fire is not a deliberate consultation — it's a safety net firing
+		// mid-turn. A council would burn 3+ model calls + synthesis per trigger,
+		// which is a surprise-quota footgun on a loop or repeated errors. Council
+		// is reserved for explicit invocation (mode:council tool arg, /consult).
+		const result = await executeSolo({ ctx, config, signal: ctx.signal, onUpdate: undefined });
 
 		// Extract text from the tool result content blocks.
 		const text = result.content
