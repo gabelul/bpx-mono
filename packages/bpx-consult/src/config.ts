@@ -91,6 +91,7 @@ const DebateModeSchema = Type.Object(
 		advocate: Type.Optional(Type.String()),
 		critic: Type.Optional(Type.String()),
 		rounds: Type.Optional(Type.Integer({ minimum: 1, maximum: 4 })),
+		timeoutMs: Type.Optional(Type.Integer({ minimum: 0, description: "Wall-clock budget for the whole debate (all rounds + synth). 0 disables." })),
 		feedbackMode: Type.Optional(FeedbackModeSchema),
 	},
 	{ additionalProperties: true },
@@ -203,7 +204,7 @@ export const DEFAULT_CONFIG: BpxConsultConfig = {
 			synthesizer: { model: "anthropic/claude-sonnet-4-6", thinkingLevel: "high" },
 			parallel: true,
 		},
-		debate: { advocate: "architect", critic: "critic", rounds: 2 },
+		debate: { advocate: "architect", critic: "critic", rounds: 2, timeoutMs: 180000 },
 	},
 	// Per-persona default models. CRITICAL: members must NOT all share one model/tier,
 	// and should avoid sharing the executor's model — parallel calls to the same
@@ -371,6 +372,29 @@ const EFFORT_ORDINAL: readonly ThinkingLevel[] = ["minimal", "low", "medium", "h
  * - An object entry disables only below its minEffort (so a user can say
  *   "don't bother consulting when I'm already on opus at high").
  */
+/**
+ * Resolve a backend for a model key. Looks up `config.backends[modelKey]`;
+ * returns undefined (→ inline default) when no CLI override is configured.
+ *
+ * The backend map is keyed by the same provider/model string used everywhere
+ * else, so a user can say "route codex/codex to the codex CLI" without touching
+ * the rest of the config. A backend entry with no `type` defaults to inline.
+ */
+export function resolveBackend(config: BpxConsultConfig, modelKey: string | undefined): { type: "cli"; command: string; args?: string[]; timeoutMs?: number } | { type: "inline" } | undefined {
+	if (!modelKey) return undefined;
+	const entry = config.backends?.[modelKey];
+	if (!entry) return undefined;
+	if (entry.type === "cli") {
+		return {
+			type: "cli",
+			command: typeof entry.command === "string" ? entry.command : "codex",
+			args: Array.isArray(entry.args) ? entry.args : undefined,
+			timeoutMs: typeof entry.timeoutMs === "number" ? entry.timeoutMs : undefined,
+		};
+	}
+	return { type: "inline" };
+}
+
 export function isDisabledForModel(
 	entries: DisabledForModelsEntry[] | undefined,
 	executorModelLabel: string,

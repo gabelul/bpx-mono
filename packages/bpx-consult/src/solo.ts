@@ -23,6 +23,8 @@ import { fileURLToPath } from "node:url";
 import { callAdvisor, resolveAdvisor } from "./advisor.js";
 import { buildConsultContext, type ContextBudget } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
+import { resolveBackend } from "./config.js";
+import { callCliAdvisor } from "./cli-backend.js";
 import {
 	ERR_ABORTED_DETAIL,
 	ERR_CALL_ABORTED,
@@ -119,39 +121,69 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 	});
 
 	try {
-		const result = await callAdvisor({
-			ctx,
-			advisor,
-			systemPrompt: ADVISOR_SYSTEM_PROMPT,
-			messages: fit.messages,
-			thinkingLevel,
-			signal,
-			sessionId: ctx.sessionManager.getSessionId(),
-			maxTokens: contextBudget.responseReserveTokens,
-		});
+		// Backend dispatch: if the solo model has a CLI backend configured, route
+		// to the async subprocess path (spawn the CLI, pipe the fitted context to
+		// stdin, parse the reply). Otherwise inline completeSimple. The fitted
+		// context is reused either way — §C ran once, both backends get the same
+		// window-safe payload. CLI uses spawn (non-blocking) so a CLI-backed council
+		// member can run parallel to an inline one (the whole point of async).
+		const backend = resolveBackend(config, soloConfig?.model);
+		let text: string;
+		let usage: { input: number; output: number; total: number } | undefined;
+		let stopReason: string;
+		let errorMessage: string | undefined;
+
+		if (backend?.type === "cli") {
+			const cliResult = await callCliAdvisor({
+				systemPrompt: ADVISOR_SYSTEM_PROMPT,
+				messages: fit.messages,
+				backend: { type: "cli", command: backend.command, args: backend.args, timeoutMs: backend.timeoutMs },
+				signal,
+				cwd: ctx.cwd,
+			});
+			text = cliResult.text;
+			usage = undefined; // CLIs don't report token usage
+			stopReason = cliResult.text ? "stop" : cliResult.timedOut ? "aborted" : "error";
+			errorMessage = cliResult.errorMessage;
+		} else {
+			const result = await callAdvisor({
+				ctx,
+				advisor,
+				systemPrompt: ADVISOR_SYSTEM_PROMPT,
+				messages: fit.messages,
+				thinkingLevel,
+				signal,
+				sessionId: ctx.sessionManager.getSessionId(),
+				maxTokens: contextBudget.responseReserveTokens,
+			});
+			text = result.text;
+			usage = result.usage;
+			stopReason = result.stopReason;
+			errorMessage = result.errorMessage;
+		}
 
 		const baseDetails: SoloDetails = {
 			advisorModel: advisor.label,
 			thinkingLevel,
 			mode: "solo",
-			usage: result.usage,
+			usage,
 			fittedTokens: fit.estimatedTokens,
 			omitted: fit.omittedCount,
-			stopReason: result.stopReason,
-			errorMessage: result.errorMessage,
+			stopReason,
+			errorMessage,
 		};
 
-		if (result.stopReason === "aborted") {
-			return err(ERR_CALL_ABORTED, { ...baseDetails, errorMessage: result.errorMessage ?? ERR_ABORTED_DETAIL });
+		if (stopReason === "aborted") {
+			return err(ERR_CALL_ABORTED, { ...baseDetails, errorMessage: errorMessage ?? ERR_ABORTED_DETAIL });
 		}
-		if (result.stopReason === "error") {
-			return err(errCallFailed(result.errorMessage), baseDetails);
+		if (stopReason === "error") {
+			return err(errCallFailed(errorMessage), baseDetails);
 		}
-		if (!result.text) {
+		if (!text) {
 			return err(ERR_EMPTY_RESPONSE, { ...baseDetails, errorMessage: ERR_EMPTY_RESPONSE_DETAIL });
 		}
 
-		return ok(result.text, baseDetails);
+		return ok(text, baseDetails);
 	} catch (e) {
 		const message = e instanceof Error ? e.message : String(e);
 		return err(errCallThrew(message), {

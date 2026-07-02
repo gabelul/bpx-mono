@@ -14,6 +14,7 @@ import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from 
 import type { Message, ThinkingLevel } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
+import { linkSignal } from "./timeout.js";
 import { buildConsultContext, type ContextBudget } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
 import {
@@ -289,24 +290,14 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 /**
  * Run ONE council member with its own AbortController.
  *
- * The controller is linked to the parent ctx.signal via addEventListener, so a
- * user-initiated abort (or session end) still propagates to every member. But
- * a member-specific timeout/circuit-breaker can abort() this controller alone
- * without touching its siblings — that's the rpiv-btw "Decision 8" pattern.
+ * The controller is linked to the parent ctx.signal, so a user-initiated abort
+ * (or session end) still propagates to every member. But a member-specific
+ * timeout/circuit-breaker can abort() this controller alone without touching
+ * its siblings — that's the rpiv-btw "Decision 8" pattern.
  *
- * (No per-member timeout is wired yet in v1; the structure is here so the
- * circuit-breaker backoff step can drop one member cleanly without rewriting
- * the fan-out.)
+ * linkSignal itself now lives in timeout.ts (shared with debate's wall-clock
+ * budget) so the abort-linking pattern has one home.
  */
-export function linkSignal(parent: AbortSignal | undefined): AbortSignal {
-	if (!parent) return new AbortController().signal;
-	// If the parent is already aborted, return an aborted signal immediately.
-	if (parent.aborted) return parent;
-	const ctrl = new AbortController();
-	const onAbort = (reason?: unknown) => ctrl.abort(reason);
-	parent.addEventListener("abort", () => onAbort(parent.reason), { once: true });
-	return ctrl.signal;
-}
 
 async function runMember(
 	ctx: ExtensionContext,

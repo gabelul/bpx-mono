@@ -35,7 +35,7 @@ import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js"
 import { buildConsultContext, type ContextBudget } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
 import { personaSystemPrompt, resolvePersona } from "./personas.js";
-import { linkSignal } from "./council.js"; // reuse the parent-linked abort helper
+import { linkSignal, withTimeout } from "./timeout.js";
 
 export interface DebateDetails {
 	mode: "debate";
@@ -74,7 +74,7 @@ export interface ExecuteDebateInput {
 }
 
 export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToolResult<DebateDetails>> {
-	const { ctx, config, signal, onUpdate, question } = input;
+	const { ctx, config, signal: parentSignal, onUpdate, question } = input;
 	const debateConfig = config.modes?.debate;
 	const rounds = clampRounds(debateConfig?.rounds);
 
@@ -135,12 +135,20 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		return fit.messages;
 	}
 
+	// Wall-clock budget across all rounds + synth. consult() is executor-callable,
+	// so an autonomous debate can hang mid-round with no human to interrupt —
+	// this is the last unprotected path after council (per-member abort) and CLI
+	// (resolveShellTimeoutMs). withTimeout fires an AbortController whose signal
+	// propagates into every callStep, so the in-flight round aborts cleanly.
+	const debateTimeoutMs = debateConfig?.timeoutMs ?? 180000;
+
+	const outcome = await withTimeout(debateTimeoutMs, parentSignal, async (debateSignal) => {
 	try {
 		// Round 1: advocate opens with the strongest FOR case.
 		pushStep(1, "advocate", "running");
 		const r1Advocate = await callStep(ctx, advocate, advocatePersona.systemPrompt, fitWithContext(
 			"OPENING: make the strongest case FOR the position under debate.",
-		), advocatePersona.thinkingLevel, signal, sessionId);
+		), advocatePersona.thinkingLevel, debateSignal, sessionId);
 		if (!r1Advocate.ok) { pushStep(1, "advocate", "error"); return err(`Round 1 advocate failed: ${r1Advocate.error}`, details); }
 		pushStep(1, "advocate", "ok");
 
@@ -156,7 +164,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 				pushStep(round, "advocate", "running");
 				const rebut = await callStep(ctx, advocate, personaSystemPrompt(advocatePersona), fitWithContext(
 					ADVOCATE_REBUT_FRAME(lastCriticText ?? ""),
-				), advocatePersona.thinkingLevel, signal, sessionId);
+				), advocatePersona.thinkingLevel, debateSignal, sessionId);
 				if (!rebut.ok) { pushStep(round, "advocate", "error"); return err(`Round ${round} advocate rebuttal failed: ${rebut.error}`, details); }
 				pushStep(round, "advocate", "ok");
 				lastAdvocateText = rebut.text;
@@ -166,7 +174,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 			pushStep(round, "critic", "running");
 			const attack = await callStep(ctx, critic, personaSystemPrompt(criticPersona), fitWithContext(
 				CRITIC_ATTACK_FRAME(lastAdvocateText),
-			), criticPersona.thinkingLevel, signal, sessionId);
+			), criticPersona.thinkingLevel, debateSignal, sessionId);
 			if (!attack.ok) { pushStep(round, "critic", "error"); return err(`Round ${round} critic attack failed: ${attack.error}`, details); }
 			pushStep(round, "critic", "ok");
 			lastCriticText = attack.text;
@@ -195,7 +203,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 			systemPrompt: SYNTHESIZER_SYSTEM_PROMPT,
 			messages: synthFit.messages,
 			thinkingLevel: config.modes?.council?.synthesizer?.thinkingLevel,
-			signal,
+			signal: debateSignal,
 			sessionId,
 			maxTokens: contextBudget.responseReserveTokens,
 		});
@@ -212,6 +220,19 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		const message = e instanceof Error ? e.message : String(e);
 		return err(`Debate threw: ${message}`, { ...details, errorMessage: message });
 	}
+	}); // end withTimeout body
+
+	// Unwrap the timeout outcome.
+	if (outcome.timedOut) {
+		return err(`Debate timed out after ${debateTimeoutMs}ms (all rounds + synth budget).`, { ...details, errorMessage: `timeout after ${debateTimeoutMs}ms` });
+	}
+	if (!outcome.ok) {
+		// A non-timeout error inside the body — the catch already converted it to
+		// an err() result, but withTimeout re-throws on the error path. Surface it.
+		const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+		return err(`Debate failed: ${message}`, { ...details, errorMessage: message });
+	}
+	return outcome.value;
 }
 
 // ---------------------------------------------------------------------------
