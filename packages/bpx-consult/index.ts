@@ -13,6 +13,7 @@ import { Type } from "typebox";
 import { isDisabledForModel, loadConfig } from "./src/config.js";
 import { executeSolo } from "./src/solo.js";
 import { executeCouncil } from "./src/council.js";
+import { registerTriggers } from "./src/triggers.js";
 import {
 	CONSULT_DESCRIPTION,
 	CONSULT_TOOL_NAME,
@@ -32,6 +33,7 @@ const ConsultParams = Type.Object({
 export default function bpxConsult(pi: ExtensionAPI): void {
 	registerConsultTool(pi);
 	registerConsultCommand(pi);
+	registerTriggers(pi);
 }
 
 function registerConsultTool(pi: ExtensionAPI): void {
