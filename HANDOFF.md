@@ -30,6 +30,10 @@ advisors for pi; replaces rpiv-advisor and fixes its context-window blowout.
 | Min-window fit (§I — council fits to smallest member window) | ✅ wired + unit-tested (council-fit.test.ts) |
 | Confidence formula (0.4·success + 0.35·agreement + 0.25·alignment) | ✅ ran on real for/against |
 | Stance validation + disagreement surfacing on genuine dissent | ✅ |
+| Triggers — onDone + whenStuck (loop + error), solo-only by design (§T) | ✅ error trigger fired live, no deadlock, no cascade |
+| Debate — round threading, per-round §C re-fit, genuine clash → verdict | ✅ synthesis quoted round-1 substance, decisive verdict |
+
+**NOT done**: debate wall-clock timeout (folded into CLI session — last unprotected path), CLI backend.
 
 **Live test setup**: `pi install -l <pkg path>` in `/tmp/bpx-test` (scoped
 local, NOT global — global would load in Gabi's 4 live `omx-*` sessions). Start
@@ -64,39 +68,50 @@ the issue entirely while proving logic.
 
 ## Remaining steps + order
 
-1. **triggers** — onDone (agent_end) + whenStuck:N (loop/error detection).
-   Self-contained, independent of the call path. **Do this first.**
-2. **debate** — sequential advocate/critic/rebut. Extends call path.
-3. **CLI backend** — async pi.exec (NOT execSync), codex/claude/opencode.
-   Extends call path.
+1. **CLI backend + debate.timeoutMs (combined — same timeout primitive, same headspace)** — async pi.exec (NOT execSync), codex/claude/opencode backends, AND a debate wall-clock timeout. **This is the only remaining step.** Most independent (subprocess plumbing, no completeSimple/consensus touch) — ideal cold-pickup.
 
-Why this order: triggers is the only remaining step that doesn't touch the
-validated completeSimple call path. Do it on a fresh session (this one is long).
-Debate and CLI build on proven ground.
+Why combined: debate is currently the only path without timeout protection (council has per-member, CLI will have resolveShellTimeoutMs). consult() is executor-callable, so "user can Ctrl-C" doesn't cover an autonomous debate that hangs mid-round — no human, no escape, executor turn blocked. Fold debate.timeoutMs into the CLI session rather than v1.1.
+
+**Debate timeout**: Promise.race / timer firing the abort controller that already propagates. Small. `config.modes.debate.timeoutMs` (suggest default 180000 = 3min for up to 4 rounds + synth).
+
+### CLI backend — pi API facts (do NOT re-fetch docs)
+- Async only: `pi.exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>` — NEVER `execSync` (blocks event loop, serializes a Promise.all council).
+- `ExecResult` has `killed: boolean` for clean timeout detection.
+- Reuse `resolveShellTimeoutMs` (tolerant frontmatter→ms, `0` = disable) + the `res.killed` pattern from `research/rpiv-mono/packages/rpiv-args/args.ts`.
+- CLI commands (per pi-external-advisor): `codex exec --sandbox read-only --skip-git-repo-check -`, `claude -p`, `opencode exec --sandbox read-only --skip-git-repo-check -`. Read prompt from stdin.
+- Output parse: JSONL (codex/opencode — parse `type: "item.completed"`, extract `.item.text`) OR plain text (claude). See `research/pi-external-advisor/index.ts`.
+
+### CLI smoke test — engineer to trip these branches
+1. **timeout fires** — tiny `timeoutMs` → `res.killed` → clean error result, not hang (this is the reason it's async).
+2. **defensive parse** — feed junk-preamble-then-JSON, must not crash (real CLIs print warnings/deprecation notices before the payload).
+3. **CLI missing/non-zero exit** — graceful "unavailable" result, not crash.
+4. **§C fit before stdin pipe** — a 32k codex advisor still needs the window refit; pipe the fitted context, not raw.
+5. **THE one that justifies execSync→pi.exec**: mixed inline+cli council in parallel — one completeSimple member + one pi.exec member, both return, parallel holds. A solo CLI call doesn't prove the decision.
+
+## Past steps (for context — these are DONE, don't redo)
+
+Solo, council, config, context engine, triggers, debate — all built and live-validated. Triggers dispatch solo-only by design (§T). Debate reuses council's stance-injection + challenge.py framing. See git log for the commit history.
+
+The discipline that caught every bug: **engineer smoke tests to trip the mocked/risky branches, never happy paths.** Seven+ integration bugs caught across solo/council/triggers validation, all invisible to unit tests.
 
 ## pi API facts already nailed down (do NOT re-fetch docs)
 
-**Triggers (step 5)**:
-- `pi.on("agent_end", { messages })` → fires onDone.
-- `pi.on("tool_call", { toolName, toolCallId, input })` → build the whenStuck
-  fingerprint as `` `${toolName}:${JSON.stringify(input)}` `` **un-truncated**
-  (pi-extensions CHANGELOG: they removed a 120-char cap that broke detection).
-- `pi.on("tool_result", { isError })` → consecutive-error count.
-- Reset point: `pi.on("before_agent_start", ...)` — clear `autoReviewedThisRound`
-  + loop counters + `lastFingerprint` here (per-prompt reset).
+**completeSimple** (inline backend, used by solo/council/debate): `pi-advisor/index.ts:324`
+is the canonical call — passes `sessionId` for prefix caching + `maxTokens`. Import
+from `@earendil-works/pi-ai/compat` subpath (moved off main entry in 0.80.x).
+Council uses per-member `AbortController` linked to parent signal (`linkSignal`
+in council.ts, now exported for debate reuse), NOT shared ctx.signal.
 
-**Two gotchas (both will bite if missed)**:
-1. **Never call session-control methods from event handlers — pi docs say they
-   deadlock.** Route the triggered consult via
-   `pi.sendUserMessage(text, { deliverAs: "steer" })`.
-2. **`consult()` is a tool, so it fires its own `tool_call` event.** Exclude it
-   from the whenStuck fingerprint (skip when `toolName === "consult"`), or a
-   triggered consult re-trips the loop detector.
+**Triggers** (DONE — `src/triggers.ts`, shipped): `pi.on("agent_end")` for onDone,
+`pi.on("tool_result", {toolName, input, isError})` for whenStuck fingerprint
+`` `${toolName}:${JSON.stringify(input)}` `` un-truncated. Reset on
+`before_agent_start`. Two traps handled: route injection through
+`pi.sendUserMessage({deliverAs})` (never session-control from a handler —
+deadlocks); skip `toolName === "consult"` so a triggered consult doesn't re-trip.
+Auto-triggers run **solo-only by design** (§T). All live-validated.
 
-**completeSimple canonical call**: `pi-advisor/index.ts:324` (the reference —
-passes `sessionId` for prefix caching + `maxTokens`). Import from
-`@earendil-works/pi-ai/compat` subpath (moved off main entry in 0.80.x). Council
-uses per-member `AbortController` linked to parent signal, NOT shared ctx.signal.
+**CLI backend** (the remaining work): see "Remaining steps" above for pi.exec +
+resolveShellTimeoutMs + ExecResult.killed + the parse/exit/parallel branches.
 
 ## Reference files (lift, don't write)
 
