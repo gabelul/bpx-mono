@@ -108,6 +108,9 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 
 	// 2. Re-fit to THIS advisor's window. This is the §P fix.
 	const contextBudget = config.contextBudget as ContextBudget;
+	// terse: cap the response hard so gut-check gets a short read, not an essay.
+	// Honored when gut-check merges its config into solo (modes.gutCheck.terse).
+	const maxTokens = soloConfig?.terse ? Math.min(1024, contextBudget.responseReserveTokens) : contextBudget.responseReserveTokens;
 	const advisorWindow = advisor.model.contextWindow;
 	const directive = question?.trim()
 		? `Specific question from the executor: ${question.trim()}`
@@ -154,7 +157,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 				thinkingLevel,
 				signal,
 				sessionId: ctx.sessionManager.getSessionId(),
-				maxTokens: contextBudget.responseReserveTokens,
+				maxTokens,
 			});
 			text = result.text;
 			usage = result.usage;

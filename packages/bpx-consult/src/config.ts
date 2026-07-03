@@ -62,6 +62,9 @@ const SoloModeSchema = Type.Object(
 		model: Type.Optional(Type.String()),
 		thinkingLevel: Type.Optional(ThinkingLevelSchema),
 		feedbackMode: Type.Optional(FeedbackModeSchema),
+		// terse is honored when gut-check merges its config into solo. Caps the
+		// response so gut-check returns a short read, not an essay.
+		terse: Type.Optional(Type.Boolean()),
 	},
 	{ additionalProperties: true },
 );
