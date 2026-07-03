@@ -65,7 +65,7 @@ This is the mode that justified the whole build. The default roster seats three 
 
 The stance framing biases what a persona hunts for, never the verdict. A `for` persona can still land on "don't do this" if the evidence says so — the guardrail is baked into the prompt because the alternative (a critic that rubber-stamps, an advocate that caves) is theater.
 
-When members genuinely disagree, the synthesizer is told to **surface the split**, not paper over it. A false consensus is worse than an honest "the architect argued X, the critic demolished it, here's my call." Every council result carries a confidence score (`0.4·success + 0.35·agreement + 0.25·stance-alignment`) so you can see how solid the read actually is.
+When members genuinely disagree, the synthesizer is told to **surface the split**, not paper over it. A false consensus is worse than an honest "the architect argued X, the critic demolished it, here's my call." Every council result carries a confidence score (`0.4·success + 0.35·agreement + 0.25·stance-alignment`) — a rough signal, not a verdict. The "agreement" term measures whether members landed on the same stance regardless of persona, which is roster-shaped (a default for/against/neutral trio will score lower on agreement than three neutrals). Treat it as a dial, not a grade.
 
 ---
 
@@ -79,6 +79,18 @@ Consults don't have to be manual. Two auto-triggers, both off by default:
 Auto-triggers always run **solo**, regardless of your default mode. An auto-fire is a safety net, not a deliberate consultation — a council burning 3+ model calls every time you hit a loop would be a surprise-quota footgun. If you want a council, call it explicitly.
 
 Triggers never fire in untrusted projects.
+
+---
+
+## How advice reaches the executor
+
+A consult result can come back three ways (`feedbackMode` in the config):
+
+- **steer** (default) — injected as a steering message mid-run. You get the advice without leaving the flow; the executor sees it and continues.
+- **pipe** — injected as a user message. The executor treats it as your input.
+- **show** — UI-only. You read it; the executor never sees it.
+
+Auto-triggers always steer (when active) so they don't interrupt. Manual consults honor the configured mode.
 
 ---
 
@@ -127,7 +139,7 @@ What v1 does *not* have: per-member circuit-breaker with exponential backoff. Is
 }
 ```
 
-Tier aliases in the defaults will drift as models update — prefer a tier alias over a pinned version where the registry supports one.
+The defaults are pinned to specific model versions, which means they'll drift as Anthropic ships new ones. The registry supports tier aliases in some places; where it does, prefer an alias. Otherwise expect to update these periodically, or override `personas.*.defaultModel` with whatever you actually have authed.
 
 ---
 
@@ -140,7 +152,7 @@ Honest about the scope so the README doesn't drift from the code:
 - **No MCP delegation backend** — a council seat calling another MCP's consensus tool. v2.
 - **No memory compression / branched-session handoff** — v2.
 
-The [SPEC](packages/bpx-consult/SPEC.md) has the full design, including the v1.1 and v2 sections.
+The [SPEC](./SPEC.md) has the full design, including the v1.1 and v2 sections.
 
 ---
 
