@@ -22,7 +22,7 @@ Secondary gaps across what I surveyed:
 - No multi-model / council mode in pi-land (only my-zen does it, as an MCP).
 - No forced counterargument / debate pattern.
 - Auto-triggers (`onDone`, `whenStuck` loop detection) live only in `pi-extensions/advisor`.
-- A CLI-backed advisor exists (`pi-external-advisor`) but via **blocking `execSync()`** — unusable for a parallel council without going async (§B fixes this with `pi.exec`).
+- A CLI-backed advisor exists (`pi-external-advisor`) but via **blocking `execSync()`** — unusable for a parallel council without going async (§B fixes this with `spawn`).
 - Feedback can only return as a tool result — no mid-run steering.
 
 ## §M — Modes
@@ -103,9 +103,10 @@ Changes from the first draft: renamed `devils-advocate`→`critic` and `qa`→`t
 Each persona/advisor can target one of:
 
 - **inline** — pi-ai `completeSimple()` with `provider/model` from the registry. Session-affine prefix caching. Default.
-- **cli** — pipe curated context (as markdown) via stdin to an external CLI: `codex`, `claude`, or `opencode`. Parse JSONL (codex/opencode) or plain text (claude) output. **Run via async `pi.exec(cmd, args, { timeout })`, not `execSync`** — `execSync` blocks the event loop, so a single CLI member would serialize an entire `Promise.all` council. `rpiv-args/args.ts` already has the pattern: `resolveShellTimeoutMs` (tolerant frontmatter→ms, `0` = disable) + `pi.exec` returning `res.killed` for a clean "[timed out after Ns]" result. Reuse it.
+- **cli** — pipe curated context (as markdown) via stdin to an external CLI: `codex`, `claude`, or `opencode`. Parse JSONL (codex/opencode) or plain text (claude) output. **Run via async `spawn`, never `execSync`** — `execSync` blocks the event loop, and the whole point of the async path is that a CLI advisor can't freeze the executor or serialize a council. (Implementation note: v1 uses Node `spawn` directly rather than `pi.exec`, because pi 0.80.x's `ExecOptions` exposes no stdin and all three CLIs read the prompt from stdin. `spawn` is the correct non-blocking primitive here; if pi adds stdin to `ExecOptions`, switching is a one-liner. Do **not** "simplify" this back to `pi.exec` — it silently breaks every CLI backend.) Timeout kills the child and returns a clean "[timed out after Ns]" result.
+  - **Window fit for CLI.** A CLI binary isn't in the model registry, so its context window can't be looked up. The context engine fits to the modelKey's registry window if the backend is keyed to a known model, else falls back to a conservative 32k (`context-engine.ts`). Key a CLI backend to a small model or leave it unregistered; keying it to a large-window model can under-fit the CLI's real (smaller) window — a v1.1 sharp edge.
 
-Mapped per-persona under `backends`. A council can mix inline and cli members freely — and because the CLI path is async, parallelism holds across mixed backends.
+Mapped per-persona under `backends`. **v1 scope: CLI is solo-only** — council members are inline-only (mixing inline + CLI members in one council is deferred; see §O). The async `spawn` foundation is what makes that mix *possible* later without a rewrite, but it isn't wired into council yet.
 
 ## §T — Triggers
 
@@ -155,7 +156,7 @@ Default `steer`. The global default lives at `feedbackMode`; per-mode override u
     // "architect": { "defaultModel": "anthropic/claude-opus-4-8", "thinkingLevel": "high" }
   },
 
-  // Per-persona/advisor backend. inline = pi-ai completeSimple; cli = async pi.exec.
+  // Per-persona/advisor backend. inline = pi-ai completeSimple; cli = async spawn (stdin). v1: cli is solo-only.
   "backends": {
     // "architect": { "type": "inline" },
     // "critic":    { "type": "cli", "command": "codex", "timeoutMs": 60000 }
@@ -200,6 +201,7 @@ Precedence: env > project (`.pi/`, only if trusted) > global (`~/.pi/agent/`) > 
 
 ## §O — Out of scope for v1
 
+- **Mixed inline + CLI council** — v1 wires CLI backends into **solo only**; council members are inline-only. Routing CLI per council member needs per-member backend resolution + the min-window fit to handle "a CLI backend has no registry `contextWindow`". Deferred to **v1.1**. The async `spawn` foundation already makes this a wiring job, not a rewrite. (This supersedes the earlier §B phrasing "a council can mix inline and cli freely" — that's the v1.1 target, not v1 behavior.)
 - MCP delegation backend (a council seat calling my-zen's `consensus` tool). v2.
 - Memory compression (caveman-style) for very long sessions. v2.
 - Branched session handoff — `pi-mimir`'s `SessionManager.createBranchedSession(leafId)` forks a snapshot `.jsonl` and runs a child `pi` subprocess (`--session`, `--model`, `--system-prompt`, `--tools`). Powerful for dedicated per-persona advisor sessions, but v2.
@@ -222,7 +224,7 @@ bpx-consult is mostly assembly. Before writing anything new, check here.
 | Loop-detect fingerprint | `pi-extensions/advisor/advisor.ts` | `${toolName}:${JSON.stringify(input)}`, `autoReviewedThisRound` |
 | Steering injection | `pi-extensions/advisor` | `pi.sendUserMessage(text, { deliverAs })`, `resolveAdviseMode` |
 | Trust + config precedence | `pi-extensions/advisor` | `contextProjectTrusted`, `resolveEffectiveConfig`, `validateAdvisorConfig` |
-| Async CLI + timeout | `rpiv-args/args.ts` | `resolveShellTimeoutMs`, `pi.exec(..., { timeout })`, `res.killed` |
+| CLI timeout pattern (final impl uses Node `spawn` + stdin, see §B) | `rpiv-args/args.ts` | `resolveShellTimeoutMs`, `res.killed` |
 | Fuzzy picker UI | `rpiv-advisor/{fuzzy,advisor-ui}.ts` | `fuzzyScore`, `filterItems`, `showFilterablePicker`, `selectListTheme` |
 | Parallel consensus + stance validation + confidence + circuit breaker | `my-zen/tools/consensus.py` | gather, stance-keyword validation, `0.4/0.35/0.25` confidence, circuit breaker + backoff |
 | Debate / challenge primitive | `my-zen/tools/challenge.py` | "critically reassess, do not reflexively agree" wrapper |
@@ -233,7 +235,7 @@ bpx-consult is mostly assembly. Before writing anything new, check here.
 
 - The advisor call **always** fits the target model's context window. No exceptions. `maxContextTokens` is derived from the advisor model's window (`ctx.modelRegistry`) minus `responseReserveTokens`, never a global constant.
 - The in-flight `consult()` call is always stripped before forwarding context.
-- CLI backends run via async `pi.exec` (never `execSync`), so council parallelism holds even with mixed inline/cli members.
+- CLI backends run via async Node `spawn` (never `execSync`), so a CLI advisor never blocks the executor's event loop. (v1 wires CLI into solo only; the async foundation is what lets council mix backends in v1.1 — see §O.)
 - Triggers never fire in untrusted projects.
 - Triggers never fire twice in the same round (`autoReviewedThisRound`), and reset on user input.
 - The loop-detection fingerprint is never truncated.
