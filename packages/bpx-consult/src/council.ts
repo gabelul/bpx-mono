@@ -43,7 +43,8 @@ export interface CouncilDetails {
 const SYNTHESIZER_SYSTEM_PROMPT = `You are a synthesizer model. Several advisor personas have reviewed the same coding task, each from a different stance (advocating, critiquing, or weighing). Your job is to merge their views into ONE recommendation for the executor.
 
 Rules:
-- Read every member's reply. Weigh them by substance, not by count.
+- The user message contains MULTIPLE replies, each under a "### <persona> [<stance>]" header. READ EVERY SECTION before synthesizing. Do not begin your synthesis until you have read all of them — if you think you only saw one, re-read the message; they are all there.
+- Weigh the replies by substance, not by count.
 - If the members agreed, say so plainly and give the consensus recommendation.
 - If they disagreed, SURFACE the disagreement. Do not paper over it. State what each side argued, then give your best call on which is right and why. A false consensus is worse than an honest split.
 - Be concrete. The executor needs a PLAN, a CORRECTION, or a STOP signal — give it one, not a summary of opinions.
@@ -238,8 +239,9 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 		})
 		.join("\n\n---\n\n");
 
+	const successfulCount = memberResults.filter((r) => r.status === "ok").length;
 	const disagreementNote = disagreement ? `\n\nNOTE: ${disagreement}` : "";
-	const synthUserPrompt = `The council has reviewed the task. Here are their replies:\n\n${memberBlock}${disagreementNote}\n\nConfidence in the consensus: ${confidence.confidence} (success ${confidence.successRatio}, agreement ${confidence.agreementRatio}, stance-alignment ${confidence.avgAlignment}).\n\nSynthesize ONE recommendation for the executor. Return a PLAN, a CORRECTION, or a STOP signal.`;
+	const synthUserPrompt = `The council has reviewed the task. Below are ${successfulCount} advisor ${successfulCount === 1 ? "reply" : "replies"}, each under a ### header. READ ALL OF THEM before synthesizing.\n\n${memberBlock}${disagreementNote}\n\nConfidence in the consensus: ${confidence.confidence} (success ${confidence.successRatio}, agreement ${confidence.agreementRatio}, stance-alignment ${confidence.avgAlignment}).\n\nSynthesize ONE recommendation for the executor that weighs every reply above. Return a PLAN, a CORRECTION, or a STOP signal.`;
 
 	// §I: fit the synthesizer input to ITS window. The grown member transcript
 	// (memberBlock + disagreementNote) can exceed the synthesizer's context —
