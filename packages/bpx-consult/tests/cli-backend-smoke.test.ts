@@ -6,7 +6,9 @@
 import { describe, expect, it } from "vitest";
 import { callCliAdvisor } from "../src/cli-backend.js";
 
-const BIN = "/tmp/bpx-cli-test/bin";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+const BIN = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "cli-bin");
 
 const baseMessages = [{ role: "user" as const, content: "Should I ship?", timestamp: Date.now() }];
 

@@ -14,7 +14,7 @@ import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from 
 import type { Message, ThinkingLevel } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
-import { linkSignal } from "./timeout.js";
+import { linkSignal, withTimeout } from "./timeout.js";
 import { buildConsultContext, type ContextBudget } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
 import {
@@ -176,16 +176,23 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 
 	// Fan out — each member is a callAdvisor with its persona prompt + model.
 	// Each member gets its OWN AbortController, linked to the parent ctx.signal,
-	// so a member's own timeout/circuit-breaker drops only that member — not
+	// so a member's own timeout/abort drops only that member — not its siblings.
 	// its siblings. (rpiv-btw "Decision 8" pattern, per Claude's review.)
-	const memberTasks = memberAdvisors.map(({ persona, advisor }): Promise<MemberResult> => {
-		return runMember(ctx, persona, advisor, fit.messages, contextBudget, signal, sessionId);
-	});
+	// Build THUNKS (not promises) so parallel:false can genuinely await them
+	// one-at-a-time. The previous .map(() => runMember()) eagerly started every
+	// member, making parallel:false a no-op (runSequential awaited promises that
+	// were already running concurrently). Thunks defer execution.
+	const memberTimeoutMs = councilConfig?.timeoutMs ?? 120000;
+	const memberThunks: Array<() => Promise<MemberResult>> = memberAdvisors.map(
+		({ persona, advisor }) => () => runMember(ctx, persona, advisor, fit.messages, contextBudget, signal, sessionId, memberTimeoutMs),
+	);
 
 	// Promise.allSettled semantics: one flaky member never crashes the council.
+	// parallel:false runs thunks sequentially (genuinely one-at-a-time) so the
+	// knob users reach for to dodge provider rate limits actually works.
 	const settled = parallel
-		? await Promise.allSettled(memberTasks)
-		: await runSequential(memberTasks);
+		? await Promise.allSettled(memberThunks.map((thunk) => thunk()))
+		: await runSequential(memberThunks);
 	const memberResults: MemberResult[] = [
 		...preFailed,
 		...settled.map((s): MemberResult =>
@@ -234,12 +241,22 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	const disagreementNote = disagreement ? `\n\nNOTE: ${disagreement}` : "";
 	const synthUserPrompt = `The council has reviewed the task. Here are their replies:\n\n${memberBlock}${disagreementNote}\n\nConfidence in the consensus: ${confidence.confidence} (success ${confidence.successRatio}, agreement ${confidence.agreementRatio}, stance-alignment ${confidence.avgAlignment}).\n\nSynthesize ONE recommendation for the executor. Return a PLAN, a CORRECTION, or a STOP signal.`;
 
+	// §I: fit the synthesizer input to ITS window. The grown member transcript
+	// (memberBlock + disagreementNote) can exceed the synthesizer's context —
+	// exactly the §P failure this extension exists to prevent. buildConsultContext
+	// drops oldest-first with an [omitted] marker if needed. Mirrors debate.ts.
+	const synthFit = buildConsultContext({
+		sessionMessages: [{ role: "user", content: synthUserPrompt, timestamp: Date.now() }],
+		advisorContextWindow: synth.model.contextWindow,
+		budget: contextBudget,
+	});
+
 	try {
 		const synthResult = await callAdvisor({
 			ctx,
 			advisor: synth,
 			systemPrompt: SYNTHESIZER_SYSTEM_PROMPT,
-			messages: [{ role: "user", content: synthUserPrompt, timestamp: Date.now() }],
+			messages: synthFit.messages,
 			thinkingLevel: councilConfig?.synthesizer?.thinkingLevel,
 			signal,
 			sessionId,
@@ -292,8 +309,10 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
  *
  * The controller is linked to the parent ctx.signal, so a user-initiated abort
  * (or session end) still propagates to every member. But a member-specific
- * timeout/circuit-breaker can abort() this controller alone without touching
- * its siblings — that's the rpiv-btw "Decision 8" pattern.
+ * timeout/abort can abort() this controller alone without touching its
+ * siblings — that's the rpiv-btw "Decision 8" pattern. (No per-member
+ * circuit-breaker/backoff in v1 — allSettled isolation is the resilience
+ * mechanism. See SPEC §M for the v1.1 plan.)
  *
  * linkSignal itself now lives in timeout.ts (shared with debate's wall-clock
  * budget) so the abort-linking pattern has one home.
@@ -307,50 +326,70 @@ async function runMember(
 	contextBudget: ContextBudget,
 	parentSignal: AbortSignal | undefined,
 	sessionId: string | undefined,
+	memberTimeoutMs: number,
 ): Promise<MemberResult> {
 	const thinkingLevel: ThinkingLevel | undefined = persona.thinkingLevel;
-	try {
-		const result = await callAdvisor({
+	// Per-member wall-clock budget (council.timeoutMs). Insurance against a
+	// provider that accepts-then-hangs — without this, allSettled never resolves
+	// and the executor turn hangs. Consistent with debate's wall-clock fix.
+	const outcome = await withTimeout(memberTimeoutMs, parentSignal, async (signal) => {
+		return callAdvisor({
 			ctx,
 			advisor,
 			systemPrompt: personaSystemPrompt(persona),
 			messages,
 			thinkingLevel,
-			signal: linkSignal(parentSignal),
+			signal,
 			sessionId,
 			maxTokens: contextBudget.responseReserveTokens,
 		});
-		const status: "ok" | "error" =
-			result.stopReason === "error" || result.stopReason === "aborted" || !result.text ? "error" : "ok";
-		return {
-			persona: persona.name,
-			stance: persona.stance,
-			model: advisor.label,
-			status,
-			text: result.text,
-			errorMessage: status === "error" ? result.errorMessage ?? result.stopReason : undefined,
-			alignment: status === "ok" ? validateStance(result.text, persona.stance) : 0,
-			usage: result.usage,
-		};
-	} catch (e) {
-		const message = e instanceof Error ? e.message : String(e);
-		return {
-			persona: persona.name,
-			stance: persona.stance,
-			model: advisor.label,
-			status: "error",
-			text: "",
-			errorMessage: message,
-			alignment: 0,
-		};
+	});
+
+	// Timeout or throw → failed member (isolation holds; siblings unaffected).
+	if (outcome.timedOut) {
+		return memberErr(persona, advisor, `timed out after ${memberTimeoutMs}ms`);
 	}
+	if (!outcome.ok) {
+		const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+		return memberErr(persona, advisor, message);
+	}
+
+	const result = outcome.value;
+	const status: "ok" | "error" =
+		result.stopReason === "error" || result.stopReason === "aborted" || !result.text ? "error" : "ok";
+	return {
+		persona: persona.name,
+		stance: persona.stance,
+		model: advisor.label,
+		status,
+		text: result.text,
+		errorMessage: status === "error" ? result.errorMessage ?? result.stopReason : undefined,
+		alignment: status === "ok" ? validateStance(result.text, persona.stance) : 0,
+		usage: result.usage,
+	};
 }
 
-async function runSequential<T>(tasks: Array<Promise<T>>): Promise<PromiseSettledResult<T>[]> {
+/** Build a failed-member result — shared by the timeout and throw paths. */
+function memberErr(persona: Persona, advisor: ResolvedAdvisor, message: string): MemberResult {
+	return {
+		persona: persona.name,
+		stance: persona.stance,
+		model: advisor.label,
+		status: "error",
+		text: "",
+		errorMessage: message,
+		alignment: 0,
+	};
+}
+
+/** Run thunks one-at-a-time. Takes FACTORIES (not promises) so each member
+ * only starts after the previous one settles — that's what makes parallel:false
+ * a real rate-limit dodge rather than a no-op. */
+async function runSequential<T>(thunks: Array<() => Promise<T>>): Promise<PromiseSettledResult<T>[]> {
 	const results: PromiseSettledResult<T>[] = [];
-	for (const task of tasks) {
+	for (const thunk of thunks) {
 		try {
-			results.push({ status: "fulfilled", value: await task });
+			results.push({ status: "fulfilled", value: await thunk() });
 		} catch (reason) {
 			results.push({ status: "rejected", reason });
 		}

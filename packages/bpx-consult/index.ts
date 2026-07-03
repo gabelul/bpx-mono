@@ -72,10 +72,17 @@ function registerConsultTool(pi: ExtensionAPI): void {
 			if (mode === "debate") {
 				return executeDebate({ ctx, config, signal, onUpdate, question: params.question });
 			}
+			if (mode === "gut-check") {
+				// Gut-check = solo run against the cheap model in modes.gutCheck.
+				// Override modes.solo so executeSolo uses the gutCheck model + effort.
+				const gutCheck = config.modes?.gutCheck;
+				if (gutCheck?.model) {
+					const gutConfig = { ...config, modes: { ...config.modes, solo: { ...config.modes?.solo, ...gutCheck } } };
+					return executeSolo({ ctx, config: gutConfig, signal, onUpdate, question: params.question });
+				}
+				return executeSolo({ ctx, config, signal, onUpdate, question: params.question });
+			}
 
-			// solo/gut-check/debate: solo wired; debate fast-follow. Gut-check is a
-			// cheap solo entry once modes.gutCheck is honored — for now it routes to
-			// solo (still useful, just not terse-tagged yet).
 			return executeSolo({ ctx, config, signal, onUpdate, question: params.question });
 		},
 	});

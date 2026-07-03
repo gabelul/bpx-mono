@@ -1,0 +1,4 @@
+#!/bin/bash
+cat > /dev/null
+sleep 10
+echo "should never reach here"

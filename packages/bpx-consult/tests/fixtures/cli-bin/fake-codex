@@ -1,0 +1,5 @@
+#!/bin/bash
+cat > /dev/null
+echo "Deprecation: --sandbox renamed in v2"
+echo "Using model gpt-5.5"
+echo '{"type":"item.completed","item":{"text":"From the CLI advisor: ship it."}}'

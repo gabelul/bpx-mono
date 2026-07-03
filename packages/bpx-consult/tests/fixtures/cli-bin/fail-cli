@@ -1,0 +1,4 @@
+#!/bin/bash
+cat > /dev/null
+echo "auth failed: invalid token" >&2
+exit 3
