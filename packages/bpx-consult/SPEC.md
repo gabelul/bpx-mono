@@ -41,7 +41,7 @@ Two mechanics lifted from my-zen's `tools/consensus.py` give "no fake consensus"
 
 If members strongly disagree, surface the disagreement. Never manufacture agreement.
 
-Resilience (also from `consensus.py:873-976`): per-member **circuit breaker** (skip a backend after repeated failures instead of cascading retries) + bounded exponential backoff with jitter. One flaky advisor never hangs the council; `Promise.allSettled` semantics, failed members drop to a fallback verdict.
+Resilience — **v1**: per-member wall-clock timeout (`council.timeoutMs`, default 120s) + `Promise.allSettled` isolation. A member that errors, times out, or hangs drops to a fallback verdict without touching its siblings or hanging the council. **v1.1**: per-member circuit breaker (skip a backend after repeated failures) + bounded exponential backoff with jitter, lifted from `consensus.py:873-976`. (The earlier draft described breaker/backoff as v1 — that was aspirational; v1 ships the timeout + isolation only.)
 
 ### debate
 Sequential and adversarial. Advocate proposes → critic attacks → advocate rebuts. Two rounds max by default, configurable. The attack step reuses my-zen's `challenge.py` wrapper — wrap the prior position in a "critically reassess, do not reflexively agree" frame so the critic genuinely stress-tests rather than rubber-stamps. For controversial calls where you want the strongest case on both sides before you decide.
