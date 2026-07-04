@@ -1,0 +1,41 @@
+# ci.yml — test gate for bpx-mono
+#
+# Runs typecheck + tests on every push/PR. Failures block the release workflow
+# (release.yml depends on main being green via the conventional-commit flow).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+    name: Node ${{ matrix.node-version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+
+      - run: npm install
+
+      # Typecheck the whole workspace (tsconfig.base.json includes all packages).
+      - run: npx tsc --noEmit -p packages/bpx-consult/tsconfig.json
+
+      # Run the vitest suite from the package directory.
+      - run: npm test --workspace @booplex/bpx-consult
+
+      # Confirm the package contents are correct before any release run.
+      - run: cd packages/bpx-consult && npm pack --dry-run

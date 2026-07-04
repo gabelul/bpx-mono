@@ -1,0 +1,77 @@
+# release.yml — bpx-mono automated releases + npm publish
+#
+# Uses release-please to automate versioning from conventional commits.
+# Flow:
+#   1. Pushes to main update or create a Release PR.
+#   2. Merging the Release PR creates the GitHub release and tag, and bumps
+#      the version in packages/bpx-consult/package.json.
+#   3. When a release is created, CI publishes @booplex/bpx-consult to npm
+#      with OIDC trusted publishing. No NPM_TOKEN required.
+#
+# npm publishing uses OIDC trusted publishing. One-time npm setup:
+#   1. https://www.npmjs.com/package/@booplex/bpx-consult/access
+#   2. Add trusted publisher:
+#      owner=gabelul, repo=bpx-mono, workflow=release.yml, environment=npm
+# (Until that trusted-publisher link is configured, the publish step 403s —
+#  the release PR + tag still work, just no npm publish.)
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Force publish current package version to npm'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Create or update release PR
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      paths_released: ${{ steps.release.outputs.paths_released }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish-npm:
+    name: Publish @booplex/bpx-consult to npm
+    needs: release-please
+    # Run when release-please created a release for bpx-consult, OR on manual
+    # dispatch with the publish flag.
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm install
+      # Gate publish on typecheck + tests, same as CI. Don't ship a broken build.
+      - run: npx tsc --noEmit -p packages/bpx-consult/tsconfig.json
+      - run: npm test --workspace @booplex/bpx-consult
+
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Publish package
+        run: npm publish --workspace @booplex/bpx-consult --provenance --access public

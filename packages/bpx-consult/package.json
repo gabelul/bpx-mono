@@ -34,6 +34,7 @@
     "src/",
     "prompts/",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "pi": {
