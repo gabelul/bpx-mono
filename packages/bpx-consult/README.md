@@ -13,7 +13,7 @@ Works in [pi](https://pi.dev) (the coding agent, v0.80+).
 ## Install
 
 ```bash
-pi install npm:@gabelul/bpx-consult
+pi install npm:@booplex/bpx-consult
 ```
 
 Then restart your pi session. The `consult` tool and `/consult` command register automatically.

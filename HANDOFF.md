@@ -6,7 +6,7 @@
 ## Project
 
 `gabelul/bpx-mono` — Booplex pi extensions monorepo (npm workspaces). First
-package: `@gabelul/bpx-consult` at `packages/bpx-consult/`. A council of AI
+package: `@booplex/bpx-consult` at `packages/bpx-consult/`. A council of AI
 advisors for pi; replaces rpiv-advisor and fixes its context-window blowout.
 
 - **Repo**: https://github.com/gabelul/bpx-mono (public)
