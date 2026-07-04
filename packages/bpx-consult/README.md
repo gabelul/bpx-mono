@@ -140,16 +140,16 @@ The defaults are pinned to specific model versions, which means they'll drift as
 
 ---
 
-## What's not in v1
+## Roadmap
 
-Honest about the scope so the README doesn't drift from the code:
+Where this is heading next:
 
-- **Council members don't route to CLI** (solo only). A mixed inline+CLI council, one `completeSimple` member plus one CLI member running in parallel, is the headline v1.1 goal. It's what the whole async-subprocess decision is there to enable.
-- **No per-member circuit-breaker / exponential backoff.** Resilience is isolation (`Promise.allSettled`) plus wall-clock timeouts. Smarter retry lands in v1.1.
-- **No MCP delegation backend.** A council seat calling another MCP's consensus tool. v2.
-- **No memory compression / branched-session handoff.** v2.
+- **v1.1 — mixed inline+CLI council.** The async-subprocess plumbing is already in place so a council can seat one `completeSimple` member and one CLI member running in parallel. Wiring the CLI backend into council members (not just solo) is the headline next step.
+- **v1.1 — smarter retry.** Resilience today is per-member isolation plus wall-clock timeouts. Per-member circuit-breaker with exponential backoff is the next layer for flaky providers.
+- **v2 — MCP delegation.** A council seat calling another MCP's consensus tool, so you can compose bpx-consult with other multi-model systems.
+- **v2 — memory compression and branched-session handoff.** For very long sessions and dedicated per-persona advisor forks.
 
-The [SPEC](./SPEC.md) has the full design, including the v1.1 and v2 sections.
+The full design (including the decisions behind each of these) is in [SPEC.md on GitHub](https://github.com/gabelul/bpx-mono/blob/main/packages/bpx-consult/SPEC.md).
 
 ---
 
