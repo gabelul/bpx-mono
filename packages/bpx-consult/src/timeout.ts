@@ -31,15 +31,17 @@ export async function withTimeout<T>(
 ): Promise<{ ok: true; value: T; timedOut: false } | { ok: false; timedOut: true; signal: AbortSignal } | { ok: false; timedOut: false; error: unknown }> {
 	// No timeout: just link the parent and run.
 	if (!timeoutMs || timeoutMs <= 0) {
-		const ctrl = linkController(parentSignal);
+		const { ctrl, cleanup } = linkController(parentSignal);
 		try {
 			return { ok: true, timedOut: false, value: await fn(ctrl.signal) };
 		} catch (error) {
 			return { ok: false, timedOut: false, error };
+		} finally {
+			cleanup();
 		}
 	}
 
-	const ctrl = linkController(parentSignal);
+	const { ctrl, cleanup } = linkController(parentSignal);
 	const timer = setTimeout(() => ctrl.abort(new TimeoutError(timeoutMs)), timeoutMs);
 	try {
 		const value = await fn(ctrl.signal);
@@ -53,6 +55,7 @@ export async function withTimeout<T>(
 		return { ok: false, timedOut: false, error };
 	} finally {
 		clearTimeout(timer);
+		cleanup();
 	}
 }
 
@@ -69,19 +72,26 @@ export class TimeoutError extends Error {
  * this one aborts too (with the same reason). If the parent is already aborted,
  * returns an already-aborted controller. Used by withTimeout and by council's
  * per-member abort isolation (linkSignal re-exported from here for continuity).
+ *
+ * Returns the controller AND a cleanup function. The cleanup MUST be called
+ * when the operation completes (in a finally) — otherwise, if the parent never
+ * aborts (the common case), the listener we attached to it leaks forever. Over
+ * a long session, every consult call would accumulate one orphan listener on
+ * ctx.signal. (Reviewer finding #5 — real leak, fixed.)
  */
-function linkController(parent: AbortSignal | undefined): AbortController {
+function linkController(parent: AbortSignal | undefined): { ctrl: AbortController; cleanup: () => void } {
 	const ctrl = new AbortController();
-	if (!parent) return ctrl;
+	if (!parent) return { ctrl, cleanup: () => {} };
 	if (parent.aborted) {
 		ctrl.abort(parent.reason);
-		return ctrl;
+		return { ctrl, cleanup: () => {} };
 	}
-	parent.addEventListener("abort", () => ctrl.abort(parent.reason), { once: true });
-	return ctrl;
-}
-
-/** Re-export for council/debate so the abort-linking pattern has one home. */
-export function linkSignal(parent: AbortSignal | undefined): AbortSignal {
-	return linkController(parent).signal;
+	const onAbort = () => ctrl.abort(parent.reason);
+	parent.addEventListener("abort", onAbort, { once: true });
+	return {
+		ctrl,
+		// removeEventListener is a no-op if the listener was already removed (or
+		// fired via {once:true}), so calling cleanup after a parent-abort is safe.
+		cleanup: () => parent.removeEventListener("abort", onAbort),
+	};
 }

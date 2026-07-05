@@ -1,0 +1,69 @@
+/**
+ * Regression test for the AbortSignal listener leak (reviewer finding #5).
+ *
+ * Before the fix, linkController attached an "abort" listener to the parent
+ * signal on every call, and withTimeout never removed it. Over a long session,
+ * every consult call leaked one orphan listener on ctx.signal.
+ *
+ * The fix: linkController returns a cleanup() that removes the listener;
+ * withTimeout calls it in a finally.
+ *
+ * Listener-counting: AbortSignal is a Web EventTarget, not a Node EventEmitter,
+ * so .eventNames() doesn't exist. We instrument addEventListener /
+ * removeEventListener on the parent signal directly to count net attachments.
+ */
+import { describe, expect, it } from "vitest";
+import { withTimeout } from "../src/timeout.js";
+
+/** Wrap a parent signal so we can count net retained listeners. */
+function instrumentedSignal(): { signal: AbortSignal; retained: () => number } {
+	const parent = new AbortController();
+	const signal = parent.signal;
+	let added = 0;
+	let removed = 0;
+	const origAdd = signal.addEventListener.bind(signal);
+	const origRemove = signal.removeEventListener.bind(signal);
+	signal.addEventListener = ((type: string, listener: any, opts?: any) => {
+		added++;
+		return origAdd(type, listener, opts);
+	}) as typeof signal.addEventListener;
+	signal.removeEventListener = ((type: string, listener: any, opts?: any) => {
+		removed++;
+		return origRemove(type, listener, opts);
+	}) as typeof signal.removeEventListener;
+	return { signal, retained: () => added - removed };
+}
+
+describe("AbortSignal listener cleanup (no leak)", () => {
+	it("does not accumulate listeners on the parent signal across calls", async () => {
+		const { signal, retained } = instrumentedSignal();
+		// Run many timeouts to completion (normal path — parent never aborts).
+		// Pre-fix: retained would be ~50 (one listener per call, never removed).
+		// Post-fix: retained is 0 (cleanup runs in finally every time).
+		for (let i = 0; i < 50; i++) {
+			await withTimeout(1000, signal, async () => "ok");
+		}
+		expect(retained()).toBe(0);
+	});
+
+	it("still cleans up when the operation throws", async () => {
+		const { signal, retained } = instrumentedSignal();
+		for (let i = 0; i < 10; i++) {
+			await withTimeout(1000, signal, async () => {
+				throw new Error("boom");
+			});
+		}
+		expect(retained()).toBe(0);
+	});
+
+	it("still works correctly after the cleanup (timeout still aborts)", async () => {
+		const { signal } = instrumentedSignal();
+		const r = await withTimeout(10, signal, async (innerSignal) => {
+			return new Promise((_, reject) => {
+				innerSignal.addEventListener("abort", () => reject(new Error("aborted")));
+			});
+		});
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.timedOut).toBe(true);
+	});
+});

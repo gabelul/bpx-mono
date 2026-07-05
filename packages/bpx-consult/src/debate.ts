@@ -35,7 +35,7 @@ import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js"
 import { buildConsultContext, type ContextBudget } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
 import { personaSystemPrompt, resolvePersona } from "./personas.js";
-import { linkSignal, withTimeout } from "./timeout.js";
+import { withTimeout } from "./timeout.js";
 
 export interface DebateDetails {
 	mode: "debate";
@@ -245,7 +245,7 @@ async function callStep(
 	systemPrompt: string,
 	messages: Message[],
 	thinkingLevel: import("@earendil-works/pi-ai").ThinkingLevel | undefined,
-	parentSignal: AbortSignal | undefined,
+	signal: AbortSignal | undefined,
 	sessionId: string | undefined,
 ): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
 	try {
@@ -255,7 +255,7 @@ async function callStep(
 			systemPrompt,
 			messages,
 			thinkingLevel,
-			signal: linkSignal(parentSignal),
+			signal,
 			sessionId,
 		});
 		if (result.stopReason === "error" || result.stopReason === "aborted" || !result.text) {

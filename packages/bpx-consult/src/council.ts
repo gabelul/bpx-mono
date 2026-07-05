@@ -14,7 +14,7 @@ import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from 
 import type { Message, ThinkingLevel } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
-import { linkSignal, withTimeout } from "./timeout.js";
+import { withTimeout } from "./timeout.js";
 import { buildConsultContext, type ContextBudget } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
 import {
@@ -315,9 +315,6 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
  * siblings — that's the rpiv-btw "Decision 8" pattern. (No per-member
  * circuit-breaker/backoff in v1 — allSettled isolation is the resilience
  * mechanism. See SPEC §M for the v1.1 plan.)
- *
- * linkSignal itself now lives in timeout.ts (shared with debate's wall-clock
- * budget) so the abort-linking pattern has one home.
  */
 
 async function runMember(
