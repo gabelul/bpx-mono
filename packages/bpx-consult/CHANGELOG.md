@@ -5,6 +5,13 @@ All notable changes to @booplex/bpx-consult are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2](https://github.com/gabelul/bpx-mono/compare/v0.1.1...v0.1.2) (2026-07-05)
+
+
+### Bug Fixes
+
+* **test:** invoke CLI fixtures via bash so CI doesn't depend on exec bit ([1026af2](https://github.com/gabelul/bpx-mono/commit/1026af285d6583dffb2fb969a067073294c63688))
+
 ## [0.1.1](https://github.com/gabelul/bpx-mono/compare/v0.1.0...v0.1.1) (2026-07-05)
 
 
