@@ -12,6 +12,20 @@ const BIN = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "cli-bin")
 
 const baseMessages = [{ role: "user" as const, content: "Should I ship?", timestamp: Date.now() }];
 
+/** Invoke a fixture via bash so the test doesn't depend on the executable bit
+ * surviving git/macOS round-trips. spawn() needs +x to run a script directly;
+ * `bash <script>` works regardless of mode. (CI failed pre-fix because the
+ * fixtures shipped as 100644, not 100755.) */
+function callFixture(fixture: string, timeoutMs = 10000) {
+	return callCliAdvisor({
+		systemPrompt: "advisor",
+		messages: baseMessages as never,
+		backend: { type: "cli", command: "bash", args: [join(BIN, fixture)], timeoutMs },
+		signal: undefined,
+	});
+}
+
+// Kept for the missing-CLI test (no fixture, raw bogus command).
 async function call(backend: { type: "cli"; command: string; args?: string[]; timeoutMs?: number }) {
 	return callCliAdvisor({ systemPrompt: "advisor", messages: baseMessages as never, backend, signal: undefined });
 }
@@ -29,14 +43,14 @@ describe("CLI backend — engineered branches", () => {
 	});
 
 	it("2. timeout fires → clean result, no hang", async () => {
-		const r = await call({ type: "cli", command: `${BIN}/slow-cli`, timeoutMs: 800 });
+		const r = await callFixture("slow-cli", 800);
 		expect(r.timedOut).toBe(true);
 		expect(r.text).toBe("");
 		expect(r.errorMessage).toMatch(/timed out after 800ms/);
 	});
 
 	it("3. non-zero exit → graceful error result, not crash", async () => {
-		const r = await call({ type: "cli", command: `${BIN}/fail-cli`, timeoutMs: 10000 });
+		const r = await callFixture("fail-cli");
 		expect(r.timedOut).toBe(false);
 		expect(r.exitCode).toBe(3);
 		expect(r.text).toBe("");
@@ -44,7 +58,7 @@ describe("CLI backend — engineered branches", () => {
 	});
 
 	it("4. plain-text (claude shape) returns the trimmed stdout", async () => {
-		const r = await call({ type: "cli", command: `${BIN}/fake-claude`, timeoutMs: 10000 });
+		const r = await callFixture("fake-claude");
 		expect(r.exitCode).toBe(0);
 		expect(r.text).toBe("A plain prose reply from the claude CLI.");
 	});
@@ -65,8 +79,8 @@ describe("CLI backend — mixed inline+cli parallelism (the async bet)", () => {
 		// would take ~sum. This is the same async property a mixed council relies on.
 		const slowStart = Date.now();
 		const [a, b] = await Promise.all([
-			call({ type: "cli", command: `${BIN}/fake-codex`, timeoutMs: 10000 }),
-			call({ type: "cli", command: `${BIN}/fake-claude`, timeoutMs: 10000 }),
+			callFixture("fake-codex"),
+			callFixture("fake-claude"),
 		]);
 		const elapsed = Date.now() - slowStart;
 		expect(a.text).toBeTruthy();
