@@ -5,6 +5,13 @@ All notable changes to @booplex/bpx-consult are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1](https://github.com/gabelul/bpx-mono/compare/v0.1.0...v0.1.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* **timeout:** remove AbortSignal listener leak + drop dead linkSignal ([e4fea8f](https://github.com/gabelul/bpx-mono/commit/e4fea8f40799a163981769654959bc9bc35b8fe5))
+
 ## [Unreleased]
 
 ### Added
