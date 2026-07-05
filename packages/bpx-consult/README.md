@@ -1,4 +1,16 @@
-# bpx-consult — a council of AI advisors for pi
+<p align="center">
+  <img src=".github/assets/banner.png" alt="bpx-consult — a council of AI advisors for pi that doesn't die when you need it" width="100%">
+</p>
+
+# bpx-consult — a council of AI advisors for pi | pi extension
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@booplex/bpx-consult"><img src="https://img.shields.io/npm/v/@booplex/bpx-consult?color=a855f7&labelColor=1a1a2e&logo=npm&logoColor=white" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/@booplex/bpx-consult"><img src="https://img.shields.io/npm/dm/@booplex/bpx-consult?color=2dd4bf&labelColor=1a1a2e" alt="npm downloads"></a>
+  <a href="https://www.npmjs.com/package/@booplex/bpx-consult#provenance"><img src="https://img.shields.io/badge/provenance-signed-2dd4bf?logo=npm&logoColor=white&labelColor=1a1a2e" alt="published with npm provenance"></a>
+  <a href="https://github.com/gabelul/bpx-mono/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/gabelul/bpx-mono/ci.yml?branch=main&labelColor=1a1a2e&color=a855f7" alt="CI"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/npm/l/@booplex/bpx-consult?color=888&labelColor=1a1a2e" alt="MIT license"></a>
+</p>
 
 I kept losing my advisor mid-session. The tool I was using would die with "context window exceeded" right when I needed it most. Long debugging session, deep in a problem, and the second opinion I called for just errored out. The bug was straightforward: it forwarded the whole compacted session to the advisor model without checking whether that model's window could actually hold it. Point a smaller advisor at a session the executor had compacted to 128k and the call overflowed every time.
 
@@ -56,6 +68,35 @@ Every mode goes through this.
 | **gut-check** | One cheap fast model, terse output. | The "does this smell off?" sanity check before you do something you're 90% sure about. |
 
 Call `consult()` with no args and solo runs. Pass `mode: "council"` (or `debate`, `gut-check`) to pick another. Or type `/consult` to open the status read-out and edit the config file.
+
+---
+
+## What it looks like
+
+The executor calls `consult()` on its own when it wants a second opinion, or you invoke it by hand. Every arg is optional:
+
+```ts
+consult()                                          // solo, default model
+consult({ question: "Is this auth flow sane?" })   // solo, with a specific ask
+consult({ mode: "council" })                       // full roster, in parallel
+consult({ mode: "debate", question: "Rewrite the parser, or patch it?" })
+```
+
+Here's a real council call — I asked whether to ship a half-built feature for the next morning's demo. The architect argued for it, the critic argued against, and the synthesizer refused to average them into mush (trimmed, but the verdict and numbers are from the actual run):
+
+```text
+COUNCIL — architect (for) · critic (against) · simplifier (neutral)
+
+The council split. Surfaced honestly, not papered over:
+  • architect (FOR)  — a demo doesn't need production rigor; ship it, caveat it live.
+  • critic (AGAINST) — a broken demo teaches the room the wrong thing; the risk IS the story.
+  • simplifier       — the pre-recorded path costs nothing and removes the failure mode entirely.
+
+VERDICT — STOP. Demo the pre-recorded flow; ship the real feature once it's tested.
+confidence 0.83   (success 1.0 · agreement 0.5 · alignment 1.0)
+```
+
+That `agreement 0.5` is the disagreement showing up in the math: two of three held opposing stances, so the confidence dial drops. That's the feature, not a bug. A council that always reported high confidence wouldn't be worth the tokens.
 
 ---
 
