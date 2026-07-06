@@ -5,6 +5,13 @@ All notable changes to @booplex/bpx-consult are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3](https://github.com/gabelul/bpx-mono/compare/v0.1.2...v0.1.3) (2026-07-06)
+
+
+### Bug Fixes
+
+* **deps:** move typebox to peerDependencies; add gallery preview image ([33da3b0](https://github.com/gabelul/bpx-mono/commit/33da3b0d5af2da3e1ab3e42216f4014e43a3126b))
+
 ## [0.1.2](https://github.com/gabelul/bpx-mono/compare/v0.1.1...v0.1.2) (2026-07-05)
 
 
