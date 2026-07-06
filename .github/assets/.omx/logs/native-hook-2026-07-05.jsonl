@@ -1,0 +1,1 @@
+{"timestamp":"2026-07-05T23:50:01.948Z","type":"native_hook_dispatch_error","hook_event_name":"SessionStart","session_id":"019f34b0-4561-7ee3-8828-63abf087fe8f","error":"ENOENT: no such file or directory, open '/Volumes/MyEXT/Projects/Others/PI/bpx-mono/.git/info/exclude'"}

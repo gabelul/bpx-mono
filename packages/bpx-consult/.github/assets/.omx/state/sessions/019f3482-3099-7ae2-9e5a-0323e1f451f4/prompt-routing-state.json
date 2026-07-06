@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "last_triage": {
+    "lane": "LIGHT",
+    "destination": "researcher",
+    "reason": "external_reference_research",
+    "prompt_signature": "sha256:db97a2185afc5cfa0fb20c89857d8d164471eb1eab1deb1b4c83625e14142a14",
+    "turn_id": "019f3482-34e4-7612-a4df-10d73f71ae62",
+    "created_at": "2026-07-05T22:59:43.709Z"
+  },
+  "suppress_followup": true
+}
