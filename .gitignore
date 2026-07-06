@@ -32,3 +32,7 @@ packages/*/node_modules/
 .npm/
 coverage/
 .nyc_output/
+
+# AI collaborator notes (local only)
+CLAUDE.md
+CLAUDE.local.md

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/banner.png" alt="bpx-consult — a council of AI advisors for pi that doesn't die when you need it" width="100%">
+  <img src="https://raw.githubusercontent.com/gabelul/bpx-mono/main/packages/bpx-consult/.github/assets/hero.png" alt="A small, cheap coding agent at a workshop desk, guided by a council of three senior AI advisors — one approving, one skeptical, one running a checklist" width="100%">
 </p>
 
 # bpx-consult — a council of AI advisors for pi | pi extension
@@ -12,9 +12,13 @@
   <a href="./LICENSE"><img src="https://img.shields.io/npm/l/@booplex/bpx-consult?color=888&labelColor=1a1a2e" alt="MIT license"></a>
 </p>
 
-I kept losing my advisor mid-session. The tool I was using would die with "context window exceeded" right when I needed it most. Long debugging session, deep in a problem, and the second opinion I called for just errored out. The bug was straightforward: it forwarded the whole compacted session to the advisor model without checking whether that model's window could actually hold it. Point a smaller advisor at a session the executor had compacted to 128k and the call overflowed every time.
+Your coding agent runs on a cheap, fast model most of the time, and most of the time that's the right call — it's grinding through edits, running tests, moving quick. The trouble is the handful of moments that actually decide how the thing turns out: the architecture choice, the "should I even build this," the bug it's been circling for twenty minutes. That's where cheap-and-fast quietly makes the wrong call, and you don't catch it until three commits later.
 
-So I built my own. Started as "fix the window bug," became "while I'm here, let me get a real council instead of one advisor." `bpx-consult` is the result: one advisor when you want speed, several debating when the call actually matters, and the window-fit guarantee the whole thing exists to provide.
+`bpx-consult` is the smarter, pricier model you keep on the bench for exactly those moments. One advisor for a quick gut-check, a whole council when the call's genuinely hard, two of them arguing it out when it's contentious. Let the cheap model do the typing; pay senior rates only when senior judgment is actually worth it.
+
+None of this is a new trick for me. I'd already run the same idea — cheap models doing the grunt work, a stronger, pricier one taming and steering them — in a private MCP of my own, well before I needed it in pi. So when I wanted it here, I wasn't starting from scratch; I knew the pattern worked.
+
+The catch was the advisor extension I tried in pi kept dying on me: it forwarded the entire session to the advisor without checking whether the advisor's own window could hold it, so my second opinion errored out at exactly the moment the session got long enough to need one. So I built `bpx-consult` — same pattern, done right for pi. And once you're already paying to call a second model, why stop at one, and why only to review? A council. A debate. A cheap model driving and an expensive one steering — with a context engine that finally makes it survive a long session, which is the part the old extension never got right.
 
 Four modes, all wired: **solo** (one model, fast), **council** (several models in parallel with stances and a synthesizer), **debate** (advocate vs critic, sequential rounds, closing verdict), and **gut-check** (one cheap model, terse read). Plus triggers that fire a consult automatically when you're stuck or when a turn finishes.
 

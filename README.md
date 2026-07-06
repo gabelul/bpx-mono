@@ -1,12 +1,16 @@
-# bpx-mono
+<p align="center">
+  <img src="https://raw.githubusercontent.com/gabelul/bpx-mono/main/.github/assets/hero.png" alt="Booplex pi extensions — a shelf of small handmade tools and little robot gadgets on a tinkerer's pegboard" width="100%">
+</p>
 
-Booplex pi extensions — a monorepo of [pi](https://pi.dev) coding-agent extensions. Each package is independently installable; the mono just keeps them under one repo and one release pipeline.
+# bpx-mono — Booplex pi extensions
+
+Small, sharp extensions for [pi](https://pi.dev), the minimal terminal coding harness. The idea across all of them: pi stays lean and does the work; these add the bits I kept wishing it had. Each package is its own independently-installable extension — the monorepo just keeps them under one roof, one CI, and one release pipeline.
 
 ## Packages
 
 ### [@booplex/bpx-consult](packages/bpx-consult/) — a council of AI advisors for pi
 
-One advisor when you want speed, several debating when the call actually matters. Four modes — solo, council, debate, gut-check — plus a context engine that fits the conversation to the advisor model's actual window (the bug that made me build this in the first place). Built to replace rpiv-advisor after it kept dying with "context window exceeded" mid-session.
+Run a cheap, fast model as your working agent and keep a stronger, pricier one on the bench to steer it: a solo second opinion, a full council, or two models debating the hard calls. Senior judgment on tap, paid for only when it counts. Four modes (solo, council, debate, gut-check), auto-triggers for when the agent gets stuck, and a context engine that re-fits every consult to the advisor model's own window so it never dies mid-session. Grew out of an earlier advisor extension that kept overflowing its window — that fix was the seed, the council is where it went.
 
 Install:
 
