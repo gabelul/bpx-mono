@@ -36,3 +36,6 @@ coverage/
 # AI collaborator notes (local only)
 CLAUDE.md
 CLAUDE.local.md
+
+# pi native session state (.omx — runs anywhere a session starts)
+.omx/
