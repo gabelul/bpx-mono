@@ -28,17 +28,32 @@ More on the way — the house is built to hold them.
 
 ## Install
 
-Each extension installs on its own — you don't need the whole monorepo:
+Take whichever extension you want — you don't need the whole monorepo. The clean way is npm:
 
 ```bash
 pi install npm:@booplex/bpx-consult
 ```
 
-Restart your pi session afterward; the extension's tools and slash commands register automatically. Config and usage live in each package's own README.
+Restart your pi session and its tools and slash commands wire themselves in. Config and usage live in each package's own README.
 
-## Release flow
+Want to try one before you commit to it? Load it for a single session — no install, gone when you quit:
 
-Releases run through GitHub Actions via [release-please](https://github.com/googleapis/release-please) + OIDC trusted publishing to npm. Conventional commits (`feat:`, `fix:`) on `main` open a Release PR; merging it tags and publishes automatically, with signed provenance. No tokens, no per-release 2FA.
+```bash
+pi -e npm:@booplex/bpx-consult
+```
+
+Prefer source? Pull it from GitHub, or from a local clone if you're hacking on it:
+
+```bash
+pi install git:github.com/gabelul/bpx-mono     # from GitHub
+pi install ./packages/bpx-consult              # from a local checkout
+```
+
+Tack `-l` onto any of these to scope the install to the current project (`.pi/`) instead of your global `~/.pi/agent/`. Once things are in: `pi list` shows what you've got, `pi config` toggles them on and off, and `pi remove` clears them out.
+
+## Releasing
+
+Automated, which is the whole point. [release-please](https://github.com/googleapis/release-please) watches `main` for conventional commits (`feat:`, `fix:`), opens a Release PR when there's something worth shipping, and merging it tags the version and publishes to npm with signed provenance over OIDC — no long-lived tokens lying around, no per-release 2FA dance. I write decent commit messages; the robot handles the paperwork.
 
 ## Repo layout
 
