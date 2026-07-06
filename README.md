@@ -9,6 +9,7 @@
   <a href="https://www.npmjs.com/package/@booplex/bpx-consult"><img src="https://img.shields.io/npm/v/@booplex/bpx-consult?label=bpx-consult&color=2dd4bf&labelColor=1a1a2e&logo=npm&logoColor=white" alt="bpx-consult on npm"></a>
   <img src="https://img.shields.io/badge/license-MIT-888?labelColor=1a1a2e" alt="MIT license">
   <a href="https://pi.dev"><img src="https://img.shields.io/badge/pi-0.80%2B-a855f7?labelColor=1a1a2e" alt="pi 0.80+"></a>
+  <a href="https://booplex.com"><img src="https://img.shields.io/badge/website-booplex.com-2dd4bf?labelColor=1a1a2e" alt="Booplex — booplex.com"></a>
 </p>
 
 Small, sharp extensions for [pi](https://pi.dev), the minimal terminal coding harness — built by [Booplex](https://booplex.com). The idea across all of them is the same: pi stays lean and does the work; these add the bits I kept wishing it had. Every package installs on its own, so you take only what you want — the monorepo just keeps them under one roof, one CI, and one release pipeline.
@@ -51,20 +52,6 @@ pi install ./packages/bpx-consult              # from a local checkout
 
 Tack `-l` onto any of these to scope the install to the current project (`.pi/`) instead of your global `~/.pi/agent/`. Once things are in: `pi list` shows what you've got, `pi config` toggles them on and off, and `pi remove` clears them out.
 
-## Releasing
-
-Automated, which is the whole point. [release-please](https://github.com/googleapis/release-please) watches `main` for conventional commits (`feat:`, `fix:`), opens a Release PR when there's something worth shipping, and merging it tags the version and publishes to npm with signed provenance over OIDC — no long-lived tokens lying around, no per-release 2FA dance. I write decent commit messages; the robot handles the paperwork.
-
-## Repo layout
-
-```
-bpx-mono/
-  packages/
-    bpx-consult/       # @booplex/bpx-consult
-  .github/workflows/   # ci.yml + release.yml
-  release-please-config.json
-```
-
 ## Related — more Booplex tools for agents that care about quality
 
 - **[slopbuster](https://github.com/gabelul/slopbuster)** — AI text humanizer. 100+ patterns, two-pass audit, three-tier scoring. Makes AI-generated prose, code comments, and academic writing sound human.
@@ -74,7 +61,7 @@ bpx-mono/
 
 ## Contributing
 
-PRs and issues welcome. Keep commit titles conventional (`feat:`, `fix:`, `docs:`) — they drive the release pipeline. Each extension keeps its own tests and docs in its package folder, so start there.
+PRs and issues welcome — start with the [contributing guide](CONTRIBUTING.md). Short version: keep commit titles conventional (they drive the release pipeline), and each extension keeps its tests and docs in its own package folder.
 
 ---
 
