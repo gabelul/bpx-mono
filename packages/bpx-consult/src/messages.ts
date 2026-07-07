@@ -14,7 +14,8 @@ export const CONSULT_DESCRIPTION =
 	"call consult() and the conversation is forwarded to a reviewer model. " +
 	"Takes optional { mode, persona, question }. No args → solo (one advisor model). " +
 	"Use mode: \"council\" for a multi-model consensus, \"debate\" for adversarial, " +
-	"\"gut-check\" for a fast cheap read. The advisor sees the task and every tool call you've made.";
+	"\"gut-check\" for a fast cheap read. The advisor sees the task and every tool call you've made. " +
+	"When the user asks for 'the advisor', 'the council', a 'second opinion', a 'debate', or a 'gut-check', that's this tool — call it with the matching mode.";
 
 export const DEFAULT_PROMPT_SNIPPET =
 	"Escalate to an advisor model for guidance when stuck, before substantive work, or before declaring done";
@@ -25,6 +26,7 @@ export const DEFAULT_PROMPT_GUIDELINES: string[] = [
 	"Also call `consult` when stuck — errors recurring, approach not converging, results that don't fit — or when considering a change of approach.",
 	"On tasks longer than a few steps, call `consult` at least once before committing to an approach and once before declaring done. On short reactive tasks where the next action is dictated by tool output you just read, you don't need to keep calling.",
 	"Give the advisor's advice serious weight. If you follow a step and it fails empirically, or you have primary-source evidence that contradicts a specific claim, adapt — a passing self-test is not evidence the advice is wrong, it's evidence your test doesn't check what the advice is checking.",
+	"Match the mode to the ask. A 'second opinion', 'sanity check', or 'ask the advisor' is solo (one voice). A 'gut check' or 'smell test' is gut-check (fast, cheap). 'The council' or a request for consensus / multiple takes is council. 'Debate this' or 'argue both sides' is debate. Don't escalate a casual second-opinion ask to a full council — council and debate spend several models, so reserve them for language that's explicitly plural or adversarial.",
 ];
 
 // --- Error / advisory text (returned to the executor as tool result text) ---
