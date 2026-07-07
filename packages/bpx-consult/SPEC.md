@@ -193,11 +193,9 @@ Precedence: env > project (`.pi/`, only if trusted) > global (`~/.pi/agent/`) > 
 - `consult({ mode?, persona?, question? })` — all args optional. No args → solo.
 
 **Slash commands** (for you):
-- `/consult` — interactive picker: mode, model, effort level. Reuse rpiv-advisor's `advisor-ui.ts` (`showFilterablePicker`, `selectListTheme`, `DynamicBorder`) + `fuzzy.ts` (`fuzzyScore`, `filterItems`) — the filterable model picker already exists.
-- `/consult solo|council|debate|gut-check [provider/model]` — set mode (and optionally model).
-- `/consult on|off` — enable/disable the whole thing.
-- `/consult status` — show current mode, models, trigger state.
-- `/consult config` — open config for editing.
+- `/consult` — **interactive configurator (shipped 0.2.0).** Opens a menu of every editable setting (default mode, solo + gut-check model/effort, each council persona's model, synthesizer, both triggers, enable/disable). Each setting opens a fuzzy-filterable picker against the live authed models; the change saves immediately and the menu reopens so several can be set in one session. Built on a ported filterable-picker primitive (`src/picker.ts`) + fuzzy helpers (`src/fuzzy.ts`), lifted from rpiv-advisor's `advisor-ui.ts` + `fuzzy.ts` (`showFilterablePicker`, `selectListTheme`, `DynamicBorder`, `fuzzyScore`, `filterItems`).
+- `/consult status` — print the status read-out (mode, models, trigger state) for a quick glance or non-interactive terminals.
+- Advanced settings (context-budget char caps, timeouts, CLI backends, disabledForModels) stay in the config file — a TUI for them would be tedious and they're rarely touched.
 
 ## §O — Out of scope for v1
 

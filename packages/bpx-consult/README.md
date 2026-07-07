@@ -71,7 +71,9 @@ Every mode goes through this.
 | **debate** | Advocate proposes, critic attacks, advocate rebuts. Sequential rounds (1–4), then a synthesizer issues a verdict. | Controversial calls where you want the strongest case on both sides before you commit. |
 | **gut-check** | One cheap fast model, terse output. | The "does this smell off?" sanity check before you do something you're 90% sure about. |
 
-Call `consult()` with no args and solo runs. Pass `mode: "council"` (or `debate`, `gut-check`) to pick another. Or type `/consult` to open the status read-out and edit the config file.
+Call `consult()` with no args and solo runs. Pass `mode: "council"` (or `debate`, `gut-check`) to pick another.
+
+Type **`/consult`** to configure everything interactively — no file editing. It opens a menu: default mode, solo and gut-check models and effort, each council persona's model, the synthesizer, both triggers, and enable/disable. Pick a setting, choose from a fuzzy-filterable list of the models you actually have authed, and the change saves immediately and the menu reopens so you can set several in one go. (`/consult status` prints the old read-out if you just want a glance.) Advanced settings — context-budget char caps, timeouts, CLI backends — still live in the config file.
 
 ---
 
@@ -139,7 +141,7 @@ Auto-triggers always steer so they don't interrupt. Manual consults honor whatev
 
 Solo can route to an external CLI instead of pi's inline provider. Set `backends.<model>.type: "cli"` in the config. Supported CLIs: `codex`, `claude`, `opencode`. Each reads the fitted context from stdin. The subprocess is non-blocking, so it doesn't serialize under the hood.
 
-In v1, the CLI backend is solo-only. Council members don't route to CLI yet. That's a [v1.1 goal](#whats-not-in-v1).
+In v1, the CLI backend is solo-only. Council members don't route to CLI yet. That's a [v1.1 goal](#roadmap).
 
 ---
 

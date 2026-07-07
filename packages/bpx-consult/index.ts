@@ -8,9 +8,10 @@
  * Config persists at ~/.pi/agent/bpx-consult.json.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { isDisabledForModel, loadConfig } from "./src/config.js";
+import { runConsultConfigurator } from "./src/consult-ui.js";
 import { executeSolo } from "./src/solo.js";
 import { executeCouncil } from "./src/council.js";
 import { executeDebate } from "./src/debate.js";
@@ -90,23 +91,31 @@ function registerConsultTool(pi: ExtensionAPI): void {
 
 function registerConsultCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("consult", {
-		description: "Configure bpx-consult: status, model, mode, or toggle on/off.",
-		async handler(_args, ctx) {
-			// Minimal v1: status read-out. The full fuzzy model-picker (lifted from
-			// rpiv-advisor/advisor-ui.ts + fuzzy.ts) lands with the picker step.
-			const config = loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
-			const solo = config.modes?.solo;
-			const lines = [
-				`bpx-consult status`,
-				`  enabled    : ${config.enabled ?? true}`,
-				`  defaultMode: ${config.defaultMode}`,
-				`  solo model : ${solo?.model ?? "(none)"}`,
-				`  effort     : ${solo?.thinkingLevel ?? "(default)"}`,
-				`  triggers   : onDone=${config.triggers?.onDone ?? false}, whenStuck=${config.triggers?.whenStuck ?? 3}`,
-				``,
-				`Edit ~/.pi/agent/bpx-consult.json to change settings.`,
-			];
-			ctx.ui.notify(lines.join("\n"), "info");
+		description: "Configure bpx-consult interactively (model, mode, effort, personas, triggers), or /consult status.",
+		async handler(args, ctx) {
+			// `/consult status` keeps the old read-out for a quick glance / non-interactive.
+			// Everything else (no arg, or any other arg) opens the interactive menu.
+			if (args.trim() === "status") {
+				showStatusReadout(ctx);
+				return;
+			}
+			await runConsultConfigurator(ctx, { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
 		},
 	});
+}
+
+function showStatusReadout(ctx: ExtensionContext): void {
+	const config = loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
+	const solo = config.modes?.solo;
+	const lines = [
+		`bpx-consult status`,
+		`  enabled    : ${config.enabled ?? true}`,
+		`  defaultMode: ${config.defaultMode}`,
+		`  solo model : ${solo?.model ?? "(none)"}`,
+		`  effort     : ${solo?.thinkingLevel ?? "(default)"}`,
+		`  triggers   : onDone=${config.triggers?.onDone ?? false}, whenStuck=${config.triggers?.whenStuck ?? 3}`,
+		``,
+		`Run /consult (no args) to edit settings interactively.`,
+	];
+	ctx.ui.notify(lines.join("\n"), "info");
 }
