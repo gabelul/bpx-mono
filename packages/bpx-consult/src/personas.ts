@@ -5,9 +5,8 @@
  * (for/against/neutral) biases what the persona hunts for and how hard it
  * stress-tests — never the verdict. A `for` persona must still be able to land
  * on "don't do this"; a persona structurally incapable of dissent is theater.
- * This guardrail is baked into the stance wrappers below (lifted from
- * my-zen's consensus.py stance prompts, which explicitly warn against
- * "purely contrarian" and "artificial balance" failure modes).
+ * This guardrail is baked into the stance wrappers below, which explicitly
+ * warn against "purely contrarian" and "artificial balance" failure modes.
  */
 
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
@@ -33,8 +32,7 @@ export interface Persona {
  * only, never the verdict — every stance wrapper explicitly permits dissent,
  * which is what stops a "for" persona from rubber-stamping.
  *
- * Lifted from my-zen tools/consensus.py stance prompts (~lines 677-772), which
- * hard-coded these guardrails after my-zen hit the "artificial balance" and
+ * The guardrails hard-code against the "artificial balance" and
  * "purely contrarian" failure modes.
  */
 export function applyStance(basePrompt: string, stance: Stance): string {

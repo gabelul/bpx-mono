@@ -1,8 +1,8 @@
 /**
  * council — the multi-model consensus mode.
  *
- * N personas run in parallel (Promise.allSettled, my-zen's asyncio.gather
- * pattern), each with its own model + stance-injected system prompt. A
+ * N personas run in parallel (Promise.allSettled), each with its own model
+ * + stance-injected system prompt. A
  * synthesizer model merges their verdicts into one recommendation, annotated
  * with a confidence score and any disagreement.
  *

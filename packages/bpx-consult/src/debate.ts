@@ -3,9 +3,9 @@
  *
  * Advocate proposes → critic attacks → advocate rebuts, for N rounds (default 2),
  * then a synthesizer issues a closing verdict. Reuses council's stance-injected
- * persona prompts and my-zen's challenge.py "critically reassess, do not
- * reflexively agree" framing for the attack step, so the critic genuinely
- * stress-tests rather than rubber-stamps.
+ * persona prompts and a "critically reassess, do not reflexively agree"
+ * framing for the attack step, so the critic genuinely stress-tests rather
+ * than rubber-stamps.
  *
  * Unlike council (parallel, stateless members), debate is STATEFUL-SEQUENTIAL:
  * each round must thread the prior round's argument so the critic can attack
@@ -58,7 +58,7 @@ Rules:
 - A debate that "agreed to disagree" is a failure of synthesis — make a call. PLAN, CORRECTION, or STOP, with reasoning.
 - You never call tools. You issue the verdict.`;
 
-// my-zen challenge.py framing, adapted: forces genuine critique, not reflexive agreement.
+// Forces genuine critique, not reflexive agreement.
 const CRITIC_ATTACK_FRAME = (priorPosition: string) =>
 	`The advocate just argued:\n\n${priorPosition}\n\nCritically reassess this position. Do NOT reflexively agree to avoid conflict — think hard about where it's wrong, what it assumed, what it overlooked. If it's sound on a point, concede that point and attack the weaker ones. But pressure-test it for real. Your job is the strongest case AGAINST, backed by reason.`;
 

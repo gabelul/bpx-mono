@@ -1,8 +1,7 @@
 /**
  * consensus — stance validation + confidence scoring.
  *
- * The two mechanics that give "no fake consensus" actual teeth, both lifted
- * from my-zen's tools/consensus.py:
+ * The two mechanics that give "no fake consensus" actual teeth:
  *
  *   - stance validation: did a member actually hold its assigned stance, or did
  *     it return mush? A `critic` that agrees with everything is theater.
@@ -41,9 +40,8 @@ export interface MemberResult {
  * Heuristic stance-alignment check. Returns a 0..1 score indicating how well
  * the reply reflects the assigned stance.
  *
- * Not an LLM judge (my-zen has one via _validate_stance_with_llm, but that's
- * another model call per member — too expensive for v1). Keyword + signal
- * based:
+ * Not an LLM judge — that's another model call per member, too expensive for
+ * v1. Keyword + signal based:
  *   - `against`: looks for critique signals (flaw, risk, won't, breaks, wrong,
  *     assumption, failure). A reply with none of them from a critic is suspect.
  *   - `for`: looks for advocacy signals (sound, works, solid, agree, good).
@@ -88,7 +86,7 @@ export function validateStance(text: string, stance: Stance): number {
 }
 
 // ---------------------------------------------------------------------------
-// Confidence score (my-zen formula)
+// Confidence score
 // ---------------------------------------------------------------------------
 
 export interface ConfidenceBreakdown {

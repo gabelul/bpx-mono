@@ -19,7 +19,7 @@ So the bug is not "no truncation" — it is **no truncation relative to the advi
 > **Repro-first:** before building §C, reproduce the overflow — run current rpiv-advisor with a small-window advisor model against a long session and confirm the failure. If it does not reproduce, the diagnosis is still off and the engine is premature.
 
 Secondary gaps across what I surveyed:
-- No multi-model / council mode in pi-land (only my-zen does it, as an MCP).
+- No multi-model / council mode in pi-land.
 - No forced counterargument / debate pattern.
 - Auto-triggers (`onDone`, `whenStuck` loop detection) live only in `pi-extensions/advisor`.
 - A CLI-backed advisor exists (`pi-external-advisor`) but via **blocking `execSync()`** — unusable for a parallel council without going async (§B fixes this with `spawn`).
@@ -33,18 +33,18 @@ Secondary gaps across what I surveyed:
 One advisor model, one response. The rpiv-advisor experience but with the context engine. Fast, cheap, default. Model and thinking level come from config (`modes.solo.model`, `modes.solo.thinkingLevel`).
 
 ### council
-N models run **in parallel** (`Promise.all`, my-zen's `asyncio.gather` pattern), each with a persona and a stance. A synthesizer model merges the verdicts into one recommendation with a confidence score. For real decisions — architecture, "should I even do this", tricky bugs.
+N models run **in parallel** (`Promise.allSettled`), each with a persona and a stance. A synthesizer model merges the verdicts into one recommendation with a confidence score. For real decisions — architecture, "should I even do this", tricky bugs.
 
-Two mechanics lifted from my-zen's `tools/consensus.py` give "no fake consensus" actual teeth:
-- **Stance validation** — after each member replies, check it actually held its assigned stance (keyword/alignment scan, `consensus.py:774-871`). A member told to argue `against` that returns mush gets flagged, not counted as agreement.
-- **Confidence score** — `0.4·success_ratio + 0.35·agreement_ratio + 0.25·avg_alignment` (`consensus.py:978-1032`). Surfaced with the synthesis so you can see how solid the consensus is.
+Two mechanics give "no fake consensus" actual teeth:
+- **Stance validation** — after each member replies, check it actually held its assigned stance (keyword/alignment scan). A member told to argue `against` that returns mush gets flagged, not counted as agreement.
+- **Confidence score** — `0.4·success_ratio + 0.35·agreement_ratio + 0.25·avg_alignment`. Surfaced with the synthesis so you can see how solid the consensus is.
 
 If members strongly disagree, surface the disagreement. Never manufacture agreement.
 
-Resilience — **v1**: per-member wall-clock timeout (`council.timeoutMs`, default 120s) + `Promise.allSettled` isolation. A member that errors, times out, or hangs drops to a fallback verdict without touching its siblings or hanging the council. **v1.1**: per-member circuit breaker (skip a backend after repeated failures) + bounded exponential backoff with jitter, lifted from `consensus.py:873-976`. (The earlier draft described breaker/backoff as v1 — that was aspirational; v1 ships the timeout + isolation only.)
+Resilience — **v1**: per-member wall-clock timeout (`council.timeoutMs`, default 120s) + `Promise.allSettled` isolation. A member that errors, times out, or hangs drops to a fallback verdict without touching its siblings or hanging the council. **v1.1**: per-member circuit breaker (skip a backend after repeated failures) + bounded exponential backoff with jitter. (The earlier draft described breaker/backoff as v1 — that was aspirational; v1 ships the timeout + isolation only.)
 
 ### debate
-Sequential and adversarial. Advocate proposes → critic attacks → advocate rebuts. Two rounds max by default, configurable. The attack step reuses my-zen's `challenge.py` wrapper — wrap the prior position in a "critically reassess, do not reflexively agree" frame so the critic genuinely stress-tests rather than rubber-stamps. For controversial calls where you want the strongest case on both sides before you decide.
+Sequential and adversarial. Advocate proposes → critic attacks → advocate rebuts. Two rounds max by default, configurable. The attack step wraps the prior position in a "critically reassess, do not reflexively agree" frame so the critic genuinely stress-tests rather than rubber-stamps. For controversial calls where you want the strongest case on both sides before you decide.
 
 ### gut-check
 One cheap fast model, terse output, low token budget. "Does this smell off?" Used before you do something you're 90% sure about but want a sanity check. Configured at `modes.gutCheck` (default a flash-tier model, `terse: true`).
@@ -80,7 +80,7 @@ Char caps, window size, and the response reserve are configurable under `context
 
 ## §V — Personas
 
-Bundled defaults, all overridable in config. Each persona is `{ name, systemPrompt, stance, defaultModel?, thinkingLevel? }`. Stance is `for | against | neutral` — injected into the system prompt (my-zen pattern). Every persona carries its own model + effort, so a council can run `architect`-on-opus + `critic`-on-codex + `tester`-on-flash.
+Bundled defaults, all overridable in config. Each persona is `{ name, systemPrompt, stance, defaultModel?, thinkingLevel? }`. Stance is `for | against | neutral` — injected into the system prompt. Every persona carries its own model + effort, so a council can run `architect`-on-opus + `critic`-on-codex + `tester`-on-flash.
 
 | persona | stance | conditional? | job |
 |---|---|---|---|
@@ -94,9 +94,9 @@ Bundled defaults, all overridable in config. Each persona is `{ name, systemProm
 
 Council default roster: `architect`, `critic`, `simplifier`. User can override the roster and every persona field in config.
 
-Changes from the first draft: renamed `devils-advocate`→`critic` and `qa`→`tester` (shorter keys, less ambiguity); **dropped `paranoid`** (it was `critic` with worse-case framing — fold that into critic's prompt as an intensity dial, don't give it a seat); **added `pragmatist`** (the draft roster was all idealist-or-critic, nobody argued ROI — this maps to my-zen's `business_analyst` validator in `systemprompts/planner_validators.py`); marked `security`/`performance` **conditional** (domain seats, not general advisors — otherwise someone gets a security review on a CSS refactor). The remaining five mirror my-zen's validator personas almost 1:1, which is reassuring corroboration.
+Changes from the first draft: renamed `devils-advocate`→`critic` and `qa`→`tester` (shorter keys, less ambiguity); **dropped `paranoid`** (it was `critic` with worse-case framing — fold that into critic's prompt as an intensity dial, don't give it a seat); **added `pragmatist`** (the draft roster was all idealist-or-critic, nobody argued ROI — this is the business-analyst / ROI voice); marked `security`/`performance` **conditional** (domain seats, not general advisors — otherwise someone gets a security review on a CSS refactor). The remaining five cover the full for/against/neutral spread plus ROI.
 
-**Stance wording invariant:** stance biases what a persona hunts for and how hard it stress-tests — **never the verdict**. A `for` persona must still be able to land on "don't do this." A persona structurally incapable of dissent is theater (my-zen's known failure mode). my-zen's stance prompts (`consensus.py:677-772`) bake in this guardrail explicitly ("avoid purely contrarian", "avoid artificial balance") — reuse that framing.
+**Stance wording invariant:** stance biases what a persona hunts for and how hard it stress-tests — **never the verdict**. A `for` persona must still be able to land on "don't do this." A persona structurally incapable of dissent is theater (a known failure mode). The guardrail is baked in explicitly: "avoid purely contrarian", "avoid artificial balance".
 
 ## §B — Backends
 
@@ -202,7 +202,7 @@ Precedence: env > project (`.pi/`, only if trusted) > global (`~/.pi/agent/`) > 
 ## §O — Out of scope for v1
 
 - **Mixed inline + CLI council** — v1 wires CLI backends into **solo only**; council members are inline-only. Routing CLI per council member needs per-member backend resolution + the min-window fit to handle "a CLI backend has no registry `contextWindow`". Deferred to **v1.1**. The async `spawn` foundation already makes this a wiring job, not a rewrite. (This supersedes the earlier §B phrasing "a council can mix inline and cli freely" — that's the v1.1 target, not v1 behavior.)
-- Native research-backed council — porting my-zen's consensus capabilities in, not delegating out. Council v1 already lifted my-zen's stance/persona/confidence patterns (see §R); what it doesn't do yet is the three things my-zen's `tools/consensus.py` does that make arguments stick: research-enhanced stances (models web-search for evidence supporting their stance), focus-area steering (`focus_areas` — security/performance/cost weighting per advisor), and context beyond the session transcript (files/images). v2 builds these natively. **MCP delegation (a seat calling another MCP's consensus tool) was the earlier draft of this line and is rejected** — it adds a hop, a runtime dependency, and a failure mode for functionality we already understand well enough to own.
+- Native research-backed council — building consensus capabilities in, not delegating out. What council v1 doesn't do yet: research-enhanced stances (advisors web-search for evidence behind their stance), focus-area steering (`focus_areas` — security/performance/cost weighting per advisor), and context beyond the session transcript (files/images). v2 builds these natively.
 - Memory compression (caveman-style) for very long sessions. v2.
 - Branched session handoff — `pi-mimir`'s `SessionManager.createBranchedSession(leafId)` forks a snapshot `.jsonl` and runs a child `pi` subprocess (`--session`, `--model`, `--system-prompt`, `--tools`). Powerful for dedicated per-persona advisor sessions, but v2.
 - Stage/signal detection (§C steps 3–4) is **v1.0 fast-follow, not blocking** — window-fit ships without it. Forked from `advisor-signals.ts` once the guaranteed-fit core is proven.
@@ -226,9 +226,6 @@ bpx-consult is mostly assembly. Before writing anything new, check here.
 | Trust + config precedence | `pi-extensions/advisor` | `contextProjectTrusted`, `resolveEffectiveConfig`, `validateAdvisorConfig` |
 | CLI timeout pattern (final impl uses Node `spawn` + stdin, see §B) | `rpiv-args/args.ts` | `resolveShellTimeoutMs`, `res.killed` |
 | Fuzzy picker UI | `rpiv-advisor/{fuzzy,advisor-ui}.ts` | `fuzzyScore`, `filterItems`, `showFilterablePicker`, `selectListTheme` |
-| Parallel consensus + stance validation + confidence + circuit breaker | `my-zen/tools/consensus.py` | gather, stance-keyword validation, `0.4/0.35/0.25` confidence, circuit breaker + backoff |
-| Debate / challenge primitive | `my-zen/tools/challenge.py` | "critically reassess, do not reflexively agree" wrapper |
-| Persona archetypes | `my-zen/systemprompts/planner_validators.py` | devil-advocate, business-analyst, simplifier, lead-engineer, qa, pm |
 | Tool-contract + ship-manifest tests | `rpiv-mono/packages/test-utils/contract.ts` | `assertToolContract`, `describeRegisteredTools`, `verifyShipManifest` |
 
 ## §I — Invariants
