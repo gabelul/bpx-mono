@@ -35,8 +35,11 @@ const PATTERNS: Array<{ mode: ConsultMode; re: RegExp }> = [
 	{ mode: "debate", re: /\b(?:debate\s+this|(?:have|let)\s+(?:them|the\s+advisors?)\s+debate|start\s+a\s+debate)\b/ },
 	// gut-check: "gut check this", "gut-check", "gut check"
 	{ mode: "gut-check", re: /\bgut[-\s]?check\b/ },
-	// council: "use/ask/consult the council", "council on this", "the council"
-	{ mode: "council", re: new RegExp(`\\b(?:${VERB}\\s+the\\s+council|council\\s+on\\s+this|convene\\s+the\\s+council|the\\s+council)\\b`) },
+	// council: "use/ask/consult the council", "council on this", "convene/run the council".
+	// NOTE: no bare "the council" — that fires on casual mentions ("what did the council
+	// say?", "the council of Elrond…") and a false positive here spends real money. A verb
+	// or the "on this" shape is required so it only triggers on an actual request.
+	{ mode: "council", re: new RegExp(`\\b(?:${VERB}\\s+the\\s+council|council\\s+on\\s+this|(?:convene|run)\\s+the\\s+council)\\b`) },
 	// solo/advisor: "ask/use/consult the advisor", "second opinion", "get advice"
 	{ mode: "solo", re: new RegExp(`\\b(?:${VERB}\\s+the\\s+advisor|second\\s+opinion|get\\s+(?:a\\s+)?second\\s+opinion|get\\s+advice)\\b`) },
 ];

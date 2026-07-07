@@ -15,7 +15,7 @@ import type { InputSource } from "@earendil-works/pi-coding-agent";
 
 describe("parseConsultPhrase — council", () => {
 	it("matches council invocations and synonyms", () => {
-		for (const p of ["use the council", "ask the council", "consult the council", "council on this", "convene the council"]) {
+		for (const p of ["use the council", "ask the council", "consult the council", "council on this", "convene the council", "run the council"]) {
 			expect(parseConsultPhrase(p)?.mode).toBe("council");
 		}
 	});
@@ -54,14 +54,13 @@ describe("parseConsultPhrase — negatives", () => {
 			"",
 			"   ",
 			"let's refactor the config loader",
-			"the council of elrond was a long meeting", // 'the council' — but see note
+			// Bare "the council" no longer fires — a verb or the "on this" shape is
+			// required, so casual mentions don't spend money.
+			"the council of elrond was a long meeting",
+			"what did the council say earlier?",
 			"add a debate feature to the UI",
 		]) {
-			const result = parseConsultPhrase(p);
-			// "the council of elrond" WILL match "the council" — that's an accepted
-			// tradeoff of being generous with synonyms. Assert only the clean negatives.
-			if (p.includes("council")) continue;
-			expect(result).toBeNull();
+			expect(parseConsultPhrase(p)).toBeNull();
 		}
 	});
 

@@ -75,13 +75,25 @@ export function registerTriggers(pi: ExtensionAPI): void {
 	// Phrase-trigger: a user typing "ask the council", "second opinion", etc.
 	// fires the matched mode directly. This is USER-initiated, so it is NOT
 	// subject to the model's per-turn consult cap. We reuse the autoRunning guard
-	// so a phrase-triggered consult's own tool_result can't re-trip the detectors,
-	// and so two phrases in flight can't stampede.
+	// so a phrase-triggered consult's own events can't re-trip the detectors, and
+	// so two phrases in flight can't stampede.
 	//
-	// Show-mode suppression: the pi InputEventResult supports { action: "handled" },
-	// which stops the agent run for this input. When feedbackMode is "show" we use
-	// it — "show me, don't act" actually halts the turn and we render UI-only.
-	// For steer/pipe we return { action: "continue" } and inject via deliver().
+	// Two delivery shapes, and they must not be handled the same way:
+	//
+	//   SHOW — halt the turn (InputEventResult { action: "handled" }) and render
+	//     UI-only. We MUST await (we need the text, and we're suppressing the agent
+	//     anyway). pi awaits every input handler, so this blocks the prompt for the
+	//     consult's duration — expected, since the user asked for a read and nothing
+	//     else is happening. ctx.signal is valid across the await, so an esc cancels.
+	//
+	//   STEER / PIPE — fire-and-forget. pi awaits input handlers (see the runner's
+	//     emitInput), so awaiting a council here would freeze the prompt for 100s+.
+	//     Instead we let the turn start immediately on the user's text and inject the
+	//     advice when it resolves — which is exactly what "steer" means: arrive
+	//     mid-run. The detached consult does NOT bind to ctx.signal: that signal is
+	//     the input handler's, and its lifetime isn't guaranteed once the handler
+	//     returns, so binding to it risks a premature abort. The modes enforce their
+	//     own timeouts, so an unbound consult is still time-limited.
 	pi.on("input", async (event, ctx) => {
 		// Only genuine user typing fires phrases. Extension-sourced input (our own
 		// injections) must never re-trigger.
@@ -97,20 +109,44 @@ export function registerTriggers(pi: ExtensionAPI): void {
 
 		const feedbackMode = config.feedbackMode ?? "steer";
 
-		state.autoRunning = true;
-		try {
-			const result = await runMode(parsed.mode, { ctx, config, signal: ctx.signal, onUpdate: undefined, question: parsed.question ?? event.text });
-			const text = extractText(result);
-			if (text) deliver(pi, text, feedbackMode);
-		} catch {
-			// A failed phrase consult must never break the user's input.
-		} finally {
-			state.autoRunning = false;
+		if (feedbackMode === "show") {
+			state.autoRunning = true;
+			if (ctx.hasUI) ctx.ui.notify(`Consulting (${parsed.mode})… showing the result, not sending it to the agent.`, "info");
+			try {
+				const text = extractText(await runMode(parsed.mode, { ctx, config, signal: ctx.signal, onUpdate: undefined, question: parsed.question }));
+				if (text) deliver(pi, text, "show");
+			} catch {
+				// A failed phrase consult must never break the user's input.
+			} finally {
+				state.autoRunning = false;
+			}
+			return { action: "handled" };
 		}
 
-		// show suppresses the agent run entirely; steer/pipe let it proceed (deliver
-		// already queued the message).
-		return feedbackMode === "show" ? { action: "handled" } : { action: "continue" };
+		// steer / pipe — detach and let the turn proceed. autoRunning is set NOW
+		// (before we return) so events fired while the consult runs stay guarded;
+		// the floating promise clears it in finally.
+		state.autoRunning = true;
+		if (ctx.hasUI) ctx.ui.notify(`Consulting (${parsed.mode}) — advice will arrive shortly…`, "info");
+		void (async () => {
+			try {
+				const text = extractText(await runMode(parsed.mode, { ctx, config, signal: undefined, onUpdate: undefined, question: parsed.question }));
+				if (text) {
+					// Frame it so the agent knows the consult already ran and doesn't
+					// re-invoke it off the user's "ask the council" instruction (the
+					// user's text still reaches the model on the steer/pipe path).
+					const framed =
+						`A ${parsed.mode} consult ran on your request:\n\n${text}\n\n` +
+						`Use this — you don't need to call consult again unless it's insufficient.`;
+					deliver(pi, framed, feedbackMode);
+				}
+			} catch {
+				// never break the turn
+			} finally {
+				state.autoRunning = false;
+			}
+		})();
+		return { action: "continue" };
 	});
 
 	// whenStuck: fires on the tool_result event (after we know isError + input).
@@ -217,14 +253,7 @@ async function runTriggeredConsult(
 		// mid-turn. A council would burn 3+ model calls + synthesis per trigger,
 		// which is a surprise-quota footgun on a loop or repeated errors. Council
 		// is reserved for explicit invocation (mode:council tool arg, /consult).
-		const result = await executeSolo({ ctx, config, signal: ctx.signal, onUpdate: undefined });
-
-		// Extract text from the tool result content blocks.
-		const text = result.content
-			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-			.map((c) => c.text)
-			.join("\n")
-			.trim();
+		const text = extractText(await executeSolo({ ctx, config, signal: ctx.signal, onUpdate: undefined }));
 
 		if (text) {
 			await pi.sendUserMessage(buildMessage(text), { deliverAs });
