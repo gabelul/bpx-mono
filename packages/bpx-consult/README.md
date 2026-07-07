@@ -191,7 +191,7 @@ Where this is heading next:
 
 - **v1.1 — mixed inline+CLI council.** The async-subprocess plumbing is already in place so a council can seat one `completeSimple` member and one CLI member running in parallel. Wiring the CLI backend into council members (not just solo) is the headline next step.
 - **v1.1 — smarter retry.** Resilience today is per-member isolation plus wall-clock timeouts. Per-member circuit-breaker with exponential backoff is the next layer for flaky providers.
-- **v2 — MCP delegation.** A council seat calling another MCP's consensus tool, so you can compose bpx-consult with other multi-model systems.
+- **v2 — research-backed council.** Council today argues from stances and the session transcript alone. The next layer grounds those arguments: advisors that web-search for evidence behind their position, focus-area steering (weigh security, or performance, or cost specifically), and context beyond the transcript (files, diagrams, images). Building it natively, not as a call-out to another MCP — the pattern's proven, owning it beats delegating it.
 - **v2 — memory compression and branched-session handoff.** For very long sessions and dedicated per-persona advisor forks.
 
 The full design (including the decisions behind each of these) is in [SPEC.md on GitHub](https://github.com/gabelul/bpx-mono/blob/main/packages/bpx-consult/SPEC.md).
