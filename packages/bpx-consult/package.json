@@ -1,6 +1,6 @@
 {
   "name": "@booplex/bpx-consult",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Pi extension. A council of AI advisors — consult one model or run a full multi-model consensus before you commit to a direction.",
   "keywords": [
     "pi-package",
