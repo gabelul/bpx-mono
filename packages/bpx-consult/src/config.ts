@@ -38,10 +38,16 @@ const FeedbackModeSchema = Type.Union(
 	{ description: "How the advisor's response reaches the executor." },
 );
 
+/** How injected advice (phrase/manual paths) reaches the executor. */
+export type FeedbackMode = Static<typeof FeedbackModeSchema>;
+
 const ConsultModeSchema = Type.Union(
 	[Type.Literal("solo"), Type.Literal("council"), Type.Literal("debate"), Type.Literal("gut-check")],
 	{ description: "Consultation mode selected when consult() is called." },
 );
+
+/** A consultation mode: solo, council, debate, or gut-check. */
+export type ConsultMode = Static<typeof ConsultModeSchema>;
 
 /** A provider/model string plus an optional effort. Shared by every mode entry. */
 const ModelEntrySchema = Type.Object(
@@ -179,6 +185,11 @@ export const BpxConsultConfigSchema = Type.Object(
 		backends: Type.Optional(Type.Record(Type.String(), BackendSchema)),
 		triggers: Type.Optional(TriggersSchema),
 		feedbackMode: Type.Optional(FeedbackModeSchema),
+		// Soft cap on how many times the MODEL may call consult() in a single turn.
+		// 0 = unlimited. Auto-triggers and phrase-triggers are separate paths and
+		// are NOT counted against this — the cap only guards the model's own
+		// tool calls so a runaway agent can't burn advisor quota mid-turn.
+		maxConsultsPerTurn: Type.Optional(Type.Integer({ minimum: 0 })),
 		contextBudget: Type.Optional(ContextBudgetSchema),
 		disabledForModels: Type.Optional(Type.Array(DisabledEntrySchema)),
 	},
@@ -222,8 +233,12 @@ export const DEFAULT_CONFIG: BpxConsultConfig = {
 		critic: { defaultModel: "anthropic/claude-sonnet-4-6", thinkingLevel: "high" },    // different tier, forces genuine critique
 		simplifier: { defaultModel: "anthropic/claude-haiku-4-5", thinkingLevel: "medium" }, // cheap+fast, questions complexity
 	},
-	triggers: { onDone: false, whenStuck: 3 },
+	// whenStuck OFF out of the box (0), matching pi-advisor's posture: the model
+	// decides when to consult, nudged by the tool guidelines. A user who wants the
+	// safety net sets whenStuck > 0 in /consult.
+	triggers: { onDone: false, whenStuck: 0 },
 	feedbackMode: "steer",
+	maxConsultsPerTurn: 3,
 	contextBudget: {
 		userChars: 2800,
 		assistantChars: 1800,
@@ -357,6 +372,7 @@ function mergeDefaults(user: BpxConsultConfig): BpxConsultConfig {
 		backends: user.backends ?? {},
 		triggers: { ...DEFAULT_CONFIG.triggers, ...user.triggers },
 		feedbackMode: user.feedbackMode ?? DEFAULT_CONFIG.feedbackMode,
+		maxConsultsPerTurn: user.maxConsultsPerTurn ?? DEFAULT_CONFIG.maxConsultsPerTurn,
 		contextBudget: { ...DEFAULT_CONFIG.contextBudget, ...user.contextBudget },
 		disabledForModels: user.disabledForModels ?? DEFAULT_CONFIG.disabledForModels,
 	};

@@ -80,8 +80,25 @@ describe("loadConfig — user overrides win, defaults fill gaps", () => {
 		// untouched sections keep defaults
 		expect(cfg.modes?.council?.members).toEqual(["architect", "critic", "simplifier"]);
 		expect(cfg.contextBudget?.responseReserveTokens).toBe(4096);
-		// whenStuck not overridden, onDone was — merge is per-field
-		expect(cfg.triggers?.whenStuck).toBe(3);
+		// whenStuck not overridden, onDone was — merge is per-field.
+		// whenStuck is OFF by default now (0), matching pi-advisor's posture.
+		expect(cfg.triggers?.whenStuck).toBe(0);
+	});
+
+	it("defaults whenStuck to off (0) and maxConsultsPerTurn to 3", () => {
+		rmSync(bpxConfigPath(), { force: true });
+		const cfg = loadConfig();
+		expect(cfg.triggers?.whenStuck).toBe(0);
+		expect(cfg.maxConsultsPerTurn).toBe(3);
+		expect(cfg.feedbackMode).toBe("steer");
+	});
+
+	it("honours a user-set maxConsultsPerTurn", () => {
+		writeFileSync(bpxConfigPath(), JSON.stringify({ maxConsultsPerTurn: 5 }));
+		expect(loadConfig().maxConsultsPerTurn).toBe(5);
+		// 0 = unlimited is a valid, distinct value (not treated as "unset")
+		writeFileSync(bpxConfigPath(), JSON.stringify({ maxConsultsPerTurn: 0 }));
+		expect(loadConfig().maxConsultsPerTurn).toBe(0);
 	});
 
 	it("strips unknown top-level keys via validateConfig (Value.Clean)", () => {

@@ -124,7 +124,7 @@ export function buildMainMenu(config: BpxConsultConfig): SelectItem[] {
 	}
 
 	items.push({ value: "triggers.onDone", label: `Trigger — onDone: ${config.triggers?.onDone ? "on" : "off"}` });
-	items.push({ value: "triggers.whenStuck", label: `Trigger — whenStuck: ${config.triggers?.whenStuck ?? 3}` });
+	items.push({ value: "triggers.whenStuck", label: `Trigger — whenStuck: ${config.triggers?.whenStuck ?? 0}` });
 	items.push({ value: "enabled", label: `Enabled: ${config.enabled === false ? "off" : "on"}` });
 	items.push({ value: MENU_DONE, label: "Done" });
 	return items;

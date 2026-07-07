@@ -118,22 +118,40 @@ When members genuinely disagree, the synthesizer is told to **surface the split*
 
 ## Triggers
 
-Consults don't have to be manual. Two auto-triggers, both off by default:
+Consults don't have to be manual. Two auto-triggers plus phrase triggers:
 
-- **whenStuck:N** fires after N consecutive tool errors *or* N identical tool calls (loop detection via an un-truncated `toolName:input` fingerprint). Default N = 3.
-- **onDone** fires when the agent finishes a turn, then reviews the work.
+- **whenStuck:N** — **off by default (N = 0).** Set it to a positive number in `/consult` to arm it. Once armed, it fires after N consecutive tool errors *or* N identical tool calls (loop detection via an un-truncated `toolName:input` fingerprint), runs a solo advisor, and steers you out. Off out of the box so the safety net never spends advisor tokens unless you ask it to — the model decides when to consult, nudged by the tool guidelines.
+- **onDone** — **off by default.** When on, it fires when the agent finishes a turn and reviews the work before it stops.
 
 Auto-triggers always run **solo**, regardless of your default mode. An auto-fire is a safety net, not a deliberate consultation. A council burning 3+ model calls every time you hit a loop would be a surprise-quota footgun. If you want a council, call it explicitly.
 
 Triggers never fire in untrusted projects.
 
+### Phrase triggers
+
+You can also fire a consult by just typing a phrase — no tool call, no slash command:
+
+| Say something like… | Runs |
+|---|---|
+| "ask the council", "use the council", "council on this", "convene the council" | **council** |
+| "ask the advisor", "second opinion", "get advice" | **solo** |
+| "debate this", "have them debate", "start a debate" | **debate** |
+| "gut check this", "gut-check" | **gut-check** |
+
+Matching is case-insensitive and word-boundaried. Add "about …" to focus it — "ask the council about the retry strategy" passes *the retry strategy* as the question. Phrase triggers only fire on your own interactive input in a trusted, enabled project, and they honor your `feedbackMode` (below). Because they're user-initiated, they're **not** subject to the per-turn consult cap.
+
 ---
 
 ## How advice reaches the executor
 
-A consult result can come back three ways, set with `feedbackMode` in the config. The default, **steer**, injects it as a steering message mid-run so you get the advice without leaving the flow and the executor sees it and continues. **pipe** injects it as a user message, so the executor treats it as your input. **show** is UI-only: you read it, the executor never sees it.
+Advice comes back differently depending on who asked for it. `feedbackMode` (default **steer**) controls only the paths where bpx-consult injects on your behalf.
 
-Auto-triggers always steer so they don't interrupt. Manual consults honor whatever you've configured.
+- **The model's own `consult()` tool call** → always a normal tool result. It asked for the advice, so it always gets it back inline. `feedbackMode` does not apply here — there's nothing to route.
+- **Phrase triggers and manual standalone runs** → honor `feedbackMode`:
+  - **steer** — injects the advice as a steering message mid-run; the executor sees it and continues without you leaving the flow.
+  - **pipe** — injects it as a user message (queued as a follow-up), so the executor treats it as your input.
+  - **show** — UI-only. You read it in a boxed "not sent to the model" message; the executor never sees it. In show mode a phrase trigger also **suppresses the agent run** — "show me, don't act" actually stops the turn (via pi's `{ action: "handled" }` input result).
+- **Auto-triggers (whenStuck / onDone)** → fixed delivery, independent of `feedbackMode`: whenStuck **steers** (so it doesn't interrupt), onDone queues a **followUp**.
 
 ---
 
@@ -178,10 +196,14 @@ What v1 does *not* have: per-member circuit-breaker with exponential backoff. Is
   "backends": {
     "openai/codex": { "type": "cli", "command": "codex", "timeoutMs": 60000 }
   },
-  "triggers": { "onDone": false, "whenStuck": 3 },
+  "triggers": { "onDone": false, "whenStuck": 0 },
+  "feedbackMode": "steer",
+  "maxConsultsPerTurn": 3,
   "contextBudget": { "responseReserveTokens": 4096 }
 }
 ```
+
+**`maxConsultsPerTurn`** (default `3`, `0` = unlimited) is a soft cap on how many times *the model itself* may call `consult()` in a single turn. Hit the cap and the next call returns a cheap "cap reached" note instead of spending another advisor call — the model proceeds on its own judgment or you raise the cap in `/consult`. It counts only the model's own tool calls; phrase triggers and auto-triggers have their own guards and are never blocked by it. The counter resets each turn and on your next input.
 
 The defaults are pinned to specific model versions, which means they'll drift as Anthropic ships new ones. The registry supports tier aliases in some places; where it does, prefer an alias. Otherwise expect to update these periodically, or override `personas.*.defaultModel` with whatever you actually have authed.
 

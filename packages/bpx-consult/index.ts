@@ -16,6 +16,8 @@ import { executeSolo } from "./src/solo.js";
 import { executeCouncil } from "./src/council.js";
 import { executeDebate } from "./src/debate.js";
 import { registerTriggers } from "./src/triggers.js";
+import { registerConsultRenderer } from "./src/deliver.js";
+import { createTurnBudget, incrementTurnBudget, isCapReached, resetTurnBudget } from "./src/turn-budget.js";
 import {
 	CONSULT_DESCRIPTION,
 	CONSULT_TOOL_NAME,
@@ -33,12 +35,28 @@ const ConsultParams = Type.Object({
 });
 
 export default function bpxConsult(pi: ExtensionAPI): void {
-	registerConsultTool(pi);
+	// One per-turn consult budget for the whole extension instance (≈ per session).
+	// Shared between the tool handler (which counts + caps the model's calls) and
+	// the reset hooks below. Phrase/auto-triggers never touch it — the cap guards
+	// only the model's own consult() spend.
+	const budget = createTurnBudget();
+
+	// Reset the counter at the same points triggers.ts resets its state: at the
+	// start of each turn, and on a genuine user input (interactive/rpc). A user
+	// stepping in resets the model's per-turn allowance.
+	pi.on("before_agent_start", () => resetTurnBudget(budget));
+	pi.on("input", (event) => {
+		if (event.source === "interactive" || event.source === "rpc") resetTurnBudget(budget);
+		return { action: "continue" };
+	});
+
+	registerConsultRenderer(pi);
+	registerConsultTool(pi, budget);
 	registerConsultCommand(pi);
 	registerTriggers(pi);
 }
 
-function registerConsultTool(pi: ExtensionAPI): void {
+function registerConsultTool(pi: ExtensionAPI, budget: ReturnType<typeof createTurnBudget>): void {
 	pi.registerTool({
 		name: CONSULT_TOOL_NAME,
 		label: TOOL_LABEL,
@@ -64,6 +82,26 @@ function registerConsultTool(pi: ExtensionAPI): void {
 					};
 				}
 			}
+
+			// Soft per-turn cap on the MODEL's own consult() calls. If the model has
+			// already spent its allowance this turn, return a CHEAP result — no
+			// advisor call — telling it to proceed or raise the cap. Auto-triggers
+			// and phrase-triggers are separate paths and never reach this handler,
+			// so they're unaffected. Count the call only when we're actually going
+			// to run it, so a capped turn doesn't inflate the counter further.
+			const cap = config.maxConsultsPerTurn ?? 0;
+			if (isCapReached(budget, cap)) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `consult cap reached — ${budget.used}/${cap} this turn. Proceed on your own judgment, or raise maxConsultsPerTurn in /consult.`,
+						},
+					],
+					details: { mode: "capped", advisorModel: "(capped)" },
+				};
+			}
+			incrementTurnBudget(budget);
 
 			const mode = params.mode ?? config.defaultMode ?? "solo";
 
@@ -113,7 +151,9 @@ function showStatusReadout(ctx: ExtensionContext): void {
 		`  defaultMode: ${config.defaultMode}`,
 		`  solo model : ${solo?.model ?? "(none)"}`,
 		`  effort     : ${solo?.thinkingLevel ?? "(default)"}`,
-		`  triggers   : onDone=${config.triggers?.onDone ?? false}, whenStuck=${config.triggers?.whenStuck ?? 3}`,
+		`  triggers   : onDone=${config.triggers?.onDone ?? false}, whenStuck=${config.triggers?.whenStuck ?? 0}`,
+		`  maxConsults: ${config.maxConsultsPerTurn ?? 0} per turn (0 = unlimited)`,
+		`  feedback   : ${config.feedbackMode ?? "steer"}`,
 		``,
 		`Run /consult (no args) to edit settings interactively.`,
 	];
