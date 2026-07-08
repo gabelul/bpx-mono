@@ -19,7 +19,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [20, 22]
+        # pi's packages require Node >=22.19.0 (their declared engines), so we
+        # test the supported floor + a current release. Node 20 was testing a
+        # runtime pi doesn't support — its bundled undici lacks APIs pi-tui needs.
+        node-version: [22, 24]
     name: Node ${{ matrix.node-version }}
     steps:
       - uses: actions/checkout@v6

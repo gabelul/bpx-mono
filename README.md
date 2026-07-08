@@ -25,6 +25,7 @@ More on the way — the house is built to hold them.
 ## Requirements
 
 - [pi](https://pi.dev) **0.80+** — the extensions build on pi's `@earendil-works/pi-ai` (`completeSimple`), its event handlers, and `sendUserMessage`.
+- **Node 22.19+** — pi's own packages require it, so the extensions do too.
 - At least one model provider authed in pi (or an external CLI like `codex` / `claude`, depending on the extension).
 
 ## Install
