@@ -5,6 +5,19 @@ All notable changes to @booplex/bpx-consult are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/gabelul/bpx-mono/compare/v0.1.5...v0.2.0) (2026-07-08)
+
+
+### Features
+
+* evidence-aware context fit + audit ledger (SPEC §E.0/§E.1) ([4bd4d19](https://github.com/gabelul/bpx-mono/commit/4bd4d19e3309985d144f3bf8cceb6395f5569aa5))
+* wire feedbackMode, add phrase triggers and per-turn consult cap ([44d9ef9](https://github.com/gabelul/bpx-mono/commit/44d9ef935235453b51e6dc53260ca5bacd781aaa))
+
+
+### Bug Fixes
+
+* phrase-trigger blocking, double-consult, and loose council match ([f199541](https://github.com/gabelul/bpx-mono/commit/f1995417d0397ecbf8c1436c202ac883dbb91b6a))
+
 ## [0.1.5](https://github.com/gabelul/bpx-mono/compare/v0.1.4...v0.1.5) (2026-07-07)
 
 
