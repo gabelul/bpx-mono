@@ -39,7 +39,7 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       paths_released: ${{ steps.release.outputs.paths_released }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: release
         with:
           config-file: release-please-config.json
@@ -48,9 +48,15 @@ jobs:
   publish-npm:
     name: Publish @booplex/bpx-consult to npm
     needs: release-please
-    # Run when release-please created a release for bpx-consult, OR on manual
-    # dispatch with the publish flag.
-    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    # Run when release-please cut a release for bpx-consult, OR on manual dispatch
+    # with the publish flag.
+    #
+    # Keyed on `paths_released`, NOT `release_created`: in manifest mode the v4/v5
+    # action sets `paths_released` (a JSON array of released package paths) but
+    # leaves the top-level `release_created` empty — which is why the auto-publish
+    # silently skipped on the 0.2.0 merge and had to be dispatched by hand. Testing
+    # that the array contains our package path fires only on a real release of it.
+    if: ${{ contains(needs.release-please.outputs.paths_released, 'packages/bpx-consult') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
     runs-on: ubuntu-latest
     environment: npm
     permissions:
