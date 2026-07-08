@@ -78,6 +78,71 @@ This is the core. Layered, borrows the best of pi-advisor + pi-extensions/adviso
 
 Char caps, window size, and the response reserve are configurable under `contextBudget`.
 
+## §E — Context engine v2: evidence-aware fit & progressive council (roadmap)
+
+v1 (§C) fits by recency-slicing (first 2 + last N) plus uniform per-message char-caps. That **guarantees the window** — the §I invariant — but it optimizes for *"don't error,"* not *"keep the evidence that decides the answer."* Two failure modes, confirmed against Anthropic's advisor-tool docs and two Codex design reviews:
+
+- **Char-truncating a message destroys the exact artifact the advisor needs** — a clipped stack trace, a half-diff, a cut test log. Dropping a whole low-value block beats mangling a high-value one.
+- **Recency is a lossy proxy for relevance.** In a long debugging session the deciding evidence is often in the *middle* — precisely what first-2/last-N drops.
+
+Anthropic's server-side advisor tool sends the advisor the **full conversation** and controls cost via *frequency + tiny output + `max_uses`*, not per-call shrinkage. bpx-consult already matches those (per-turn cap = `max_uses`, decision-point guidelines, terse advisor prompt). It differs in one way that forces fitting: it supports **small-window and other-provider advisors**. But *"must fit" ≠ "current fit is good."* §E makes the fit evidence-aware and the council cost progressive — every piece gated behind measurement and bounded by §I.
+
+**Gate — measure first.** `SoloDetails` already carries `fittedTokens` and `omitted`. Log them; read real sessions before building. If p50 solo consult fits comfortably (< ~10k), context size is not the problem — ship §E.0/§E.1 and stop. Do not build §E.2–§E.4 on an unmeasured cost.
+
+### §E.0 — Evidence ledger (deterministic selection + audit) — the keystone
+
+The trap §E.1 must not fall into: *"evidence-aware" must never mean "model-judged relevance."* If the (possibly stuck) model scores its own evidence, we've quietly reintroduced the weak-judge problem that §E.2 rejects — it would score away the fact that proves it wrong. **Selection is deterministic, by artifact type, before any model touches it.**
+
+- **Classifier** tags each transcript item by type: user directive, consult question, acceptance criteria, latest diff, failing command output, stack trace, edited file, test name/result, reviewer/security finding, repeated-failure signature, plain read/exploration.
+- **Promotion (pinning) rules** — directives, user corrections, acceptance criteria, reviewer/security findings, and repeated-failure signatures are *pinned*: they survive compression even when old, because they're the "middle clue" recency drops.
+- **Audit ledger** — per consult, record what was *kept / compressed / clipped / dropped* and the priority reason. `fittedTokens + omitted` alone can't debug a bad consult; the ledger can. Without it, §E.1 can look principled while still dropping the decisive evidence under a nicer name.
+
+### §E.1 — Priority-ordered fit with a deterministic budget ladder
+
+Fill the window by priority (from §E.0 tags), not by position. But *priority ≠ never-dropped* — §I is absolute, so there is always a terminal clip. The budget ladder, in order:
+
+1. **Reserve off the top** — advisor response tokens + a fixed reserve for omission/truncation markers + metadata. Non-negotiable.
+2. **Fill by bucket, each hard-capped** so no bucket starves the rest:
+   - question / directive + acceptance criteria (pinned)
+   - latest failure + latest diff — *the payload*. **Selection when plural**: most-recent + most-relevant-to-question, cap the count, dedup repeated snapshots, demote binary/lockfile churn.
+   - pinned artifacts (reviewer/security findings, user corrections, repeated-failure signatures)
+   - stage signals — **bounded + deduped** (repeated failures collapse to signature+count; cap the list so signals can't crowd out payload)
+   - recent chronological tail (verbatim while budget allows)
+   - older transcript (compressed to signals, dropped first)
+3. **Last-resort clip** — if the pinned priority-1/2 items *alone* exceed budget, preserve head+tail+error-anchor of each with explicit truncation markers. §I never breaks; the fit is guaranteed even in the pathological case.
+
+Principle: **compress the path, preserve the payload** — but everything is clippable-of-last-resort, marked, and never silently dropped.
+
+### §E.2 — Framed-evidence consults (the safe form of model-authored context)
+
+The tempting shortcut — have the executor write a summary and send *that* instead of the transcript — is the one Anthropic deliberately rejected: the stuck model is the worst judge of what to omit, and it bakes its wrong assumption into the brief, hiding the evidence that would correct it.
+
+The safe form: extend `consult()` with optional **framing** fields — a focused question, the executor's current hypothesis, what it's unsure about — sent as an **explicitly non-authoritative** block layered *on top of* the fitted transcript, never replacing it:
+
+> *"The executor believes X and is unsure about Y. Treat this as its framing, not fact — verify against the evidence below."*
+
+Preserves independence (the advisor can reject the framing using the attached evidence) while giving it navigation. **Summary-only consults stay banned; brief-plus-evidence is allowed.** Resolves the full-transcript (Anthropic) vs model-summary (naive) tension instead of picking a side.
+
+### §E.3 — Progressive council (cuts the N× cost)
+
+Council is the only mode that multiplies the context cost (N members × context). my-zen — the council's origin — staged this as `consensus_stage: strategic → final`. v2 recovers that:
+
+1. **Scout** — one cheap gut-check-tier read first. Confident + low-risk → return it, no fan-out.
+2. **Fan out** — only when the scout flags low confidence, high stakes, or genuinely competing options.
+3. **Differentiate by stance + model tier over a *shared core*.** Every member receives the same core evidence packet (§E.1). Role-specific **addenda** (e.g. the member auditing failure logs gets extra log detail) are allowed *only layered on top of the preserved core and labeled as addenda* — never as a replacement slice, which reintroduces the per-member blind spot §E.2 exists to avoid. (Steelman acknowledged: when the packet is too large for the weakest advisor and domains are separable, addenda-on-core genuinely helps; slice-*instead-of*-core does not.) my-zen differentiated by model/persona over shared context — same axis.
+4. **Fit once, reuse** the core across members (cache-friendly, §E.4) instead of N independent fits.
+5. **Structured, evidence-referenced outputs** — my-zen's `{assessment, suggestions:[{category, confidence, evidence[]}]}`, capped length. Value is diversity of *judgment*, not N essays.
+
+### §E.4 — Prompt caching (provider-dependent, measure-gated)
+
+Anthropic's advisor tool does **not** cache the advisor's read ("each call processes the full transcript anew"). A client-side impl can beat that — *if* (a) pi's `completeSimple` exposes cache-control markers and (b) a large prefix (system prompt + older transcript) stays byte-stable across consults. Pitfalls: strip-in-flight-call, truncation decisions, omitted markers, tool-call IDs, and provider serialization all shift bytes and bust the cache; and **per-advisor different windows = different prefixes = no shared cache**, so caching helps *repeated same-advisor* calls (and pairs with §E.3's shared packet). Design a canonical append-only prefix only if the numbers justify it. Workload-dependent until measured.
+
+### §E.5 — Invariants preserved
+
+All of §E still obeys §I: every advisor call fits its target window (the §E.1 last-resort clip is what keeps this absolute); no silent drops (markers everywhere, including signal-compressed and clipped blocks); the model's own `consult()` still returns a tool result; feedbackMode untouched. §E.2's framing is strictly additive; §E.3's scout still routes through the fitted-context executor path.
+
+**Sequencing:** measure → §E.0 ledger + §E.1 fit (built together — the ledger is what makes the fit honest, and doing it now carries no independence risk) → §E.2 framed evidence + §E.3 progressive council (measure-gated) → §E.4 caching (last, fragile). Separate from the README roadmap's *research-backed council* (v2), which grounds arguments with external evidence; §E makes the existing path cheaper and higher-fidelity. Do §E first.
+
 ## §V — Personas
 
 Bundled defaults, all overridable in config. Each persona is `{ name, systemPrompt, stance, defaultModel?, thinkingLevel? }`. Stance is `for | against | neutral` — injected into the system prompt. Every persona carries its own model + effort, so a council can run `architect`-on-opus + `critic`-on-codex + `tester`-on-flash.
