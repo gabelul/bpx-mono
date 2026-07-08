@@ -15,7 +15,7 @@ import type { Message, ThinkingLevel } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
 import { withTimeout } from "./timeout.js";
-import { buildConsultContext, type ContextBudget } from "./context-engine.js";
+import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSummary } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
 import {
 	computeConfidence,
@@ -31,6 +31,8 @@ export interface CouncilDetails {
 	/** Estimated input tokens each member saw (post context-engine re-fit). */
 	fittedTokens?: number;
 	omitted?: number;
+	/** §E.0 evidence-ledger roll-up for the shared member context (kept/compressed/clipped/dropped). */
+	ledger?: LedgerSummary;
 	synthesizer: string;
 	confidence: number;
 	confidenceBreakdown?: { successRatio: number; agreementRatio: number; avgAlignment: number };
@@ -156,6 +158,24 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 		budget: contextBudget,
 		directive,
 	});
+	const ledgerSummary = summarizeLedger(fit.ledger);
+
+	// Fail-closed (§E.1 RULE B): if the shared context can't fit the smallest
+	// member's window even after clipping the pinned evidence, don't fan out a
+	// guaranteed-to-overflow payload — surface a clean error. Every member would
+	// hit the same wall, so failing once here is cheaper and honest.
+	if (fit.error) {
+		return err(`Couldn't fit the council window: ${fit.error}`, {
+			mode: "council",
+			members: memberAdvisors.map((m) => ({ persona: m.persona.name, model: m.advisor.label, status: "error" })),
+			synthesizer: synth.label,
+			confidence: 0,
+			fittedTokens: fit.estimatedTokens,
+			omitted: fit.omittedCount,
+			ledger: ledgerSummary,
+			errorMessage: fit.error,
+		});
+	}
 
 	onUpdate?.({
 		content: [{ type: "text", text: `Consulting council: ${personas.map((p) => p.name).join(", ")}…` }],
@@ -225,6 +245,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 				confidence: 0,
 				fittedTokens: fit.estimatedTokens,
 				omitted: fit.omittedCount,
+				ledger: ledgerSummary,
 				errorMessage: "all members failed",
 			},
 		);
@@ -270,6 +291,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 			members: memberResults.map((r) => ({ persona: r.persona, model: r.model, status: r.status })),
 			fittedTokens: fit.estimatedTokens,
 			omitted: fit.omittedCount,
+			ledger: ledgerSummary,
 			synthesizer: synth.label,
 			confidence: confidence.confidence,
 			confidenceBreakdown: {
@@ -297,6 +319,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 			confidence: confidence.confidence,
 			fittedTokens: fit.estimatedTokens,
 			omitted: fit.omittedCount,
+			ledger: ledgerSummary,
 			errorMessage: message,
 		});
 	}

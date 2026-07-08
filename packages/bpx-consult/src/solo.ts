@@ -21,7 +21,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callAdvisor, resolveAdvisor } from "./advisor.js";
-import { buildConsultContext, type ContextBudget } from "./context-engine.js";
+import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSummary } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
 import { resolveBackend } from "./config.js";
 import { callCliAdvisor } from "./cli-backend.js";
@@ -62,6 +62,13 @@ export interface SoloDetails {
 	fittedTokens?: number;
 	/** Messages dropped by the sliding window, if any. */
 	omitted?: number;
+	/**
+	 * Compact §E.0 evidence-ledger roll-up: how many messages the fit kept,
+	 * compressed to signals, clipped to anchors, or dropped. The measurement
+	 * instrument (§E gate) — read these across real sessions before building
+	 * §E.2–§E.4.
+	 */
+	ledger?: LedgerSummary;
 	stopReason?: string;
 	errorMessage?: string;
 }
@@ -122,6 +129,23 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 		budget: contextBudget,
 		directive,
 	});
+	const ledgerSummary = summarizeLedger(fit.ledger);
+
+	// Fail-closed (§E.1 RULE B): the context engine couldn't fit even the minimal
+	// pinned evidence into this advisor's window. Surface a clean error rather than
+	// forwarding an oversized payload — forwarding would reopen the exact §P
+	// overflow this extension exists to prevent.
+	if (fit.error) {
+		return err(`Couldn't fit the advisor window: ${fit.error}`, {
+			advisorModel: advisor.label,
+			thinkingLevel,
+			mode: "solo",
+			fittedTokens: fit.estimatedTokens,
+			omitted: fit.omittedCount,
+			ledger: ledgerSummary,
+			errorMessage: fit.error,
+		});
+	}
 
 	try {
 		// Backend dispatch: if the solo model has a CLI backend configured, route
@@ -172,6 +196,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 			usage,
 			fittedTokens: fit.estimatedTokens,
 			omitted: fit.omittedCount,
+			ledger: ledgerSummary,
 			stopReason,
 			errorMessage,
 		};
@@ -195,6 +220,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 			mode: "solo",
 			fittedTokens: fit.estimatedTokens,
 			omitted: fit.omittedCount,
+			ledger: ledgerSummary,
 			errorMessage: message,
 		});
 	}

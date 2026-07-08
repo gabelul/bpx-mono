@@ -9,7 +9,7 @@
  * tests stay green.
  */
 import { describe, expect, it } from "vitest";
-import { buildConsultContext, type ContextBudget } from "../src/context-engine.js";
+import { buildConsultContext, summarizeLedger, type ContextBudget } from "../src/context-engine.js";
 import { userText } from "../src/context-engine.js";
 
 const BUDGET: ContextBudget = {
@@ -37,7 +37,12 @@ describe("§I fix — synthesizer input is window-fitted", () => {
 			budget: BUDGET,
 		});
 		expect(fit.estimatedTokens).toBeLessThanOrEqual(fit.maxInputTokens);
-		expect(fit.omittedCount).toBeGreaterThan(0);
+		// Real reduction happened (not a trivial fit). Under §E.1 these verbose
+		// "member replies" classify as directives (pinned), so the reduction shows up
+		// as compression/clipping rather than dropping — pinned retains a
+		// representation (RULE B). The old assertion pinned `omittedCount > 0`.
+		const summary = summarizeLedger(fit.ledger);
+		expect(summary.compressed + summary.clipped + summary.dropped).toBeGreaterThan(0);
 		expect(fit.maxInputTokens).toBe(32_000 - 4096);
 	});
 

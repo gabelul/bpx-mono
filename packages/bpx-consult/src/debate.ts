@@ -32,7 +32,7 @@ import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from 
 import type { Message } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
-import { buildConsultContext, type ContextBudget } from "./context-engine.js";
+import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSummary } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
 import { personaSystemPrompt, resolvePersona } from "./personas.js";
 import { withTimeout } from "./timeout.js";
@@ -46,6 +46,8 @@ export interface DebateDetails {
 	steps: Array<{ round: number; role: "advocate" | "critic"; status: string }>;
 	/** Estimated tokens of the final synthesizer input (grown transcript). */
 	finalTranscriptTokens?: number;
+	/** §E.0 evidence-ledger roll-up for the seed session context each debater saw. */
+	ledger?: LedgerSummary;
 	usage?: { input: number; output: number; total: number };
 	stopReason?: string;
 	errorMessage?: string;
@@ -132,6 +134,10 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 			budget: contextBudget,
 			directive: [directive, extra].filter(Boolean).join("\n\n") || undefined,
 		});
+		// Record the ledger from the seed fit (the transcript is the same each round;
+		// only the framing `extra` grows, so the roll-up is representative). Telemetry
+		// for the §E gate — surfaced in details.ledger.
+		details.ledger = summarizeLedger(fit.ledger);
 		return fit.messages;
 	}
 

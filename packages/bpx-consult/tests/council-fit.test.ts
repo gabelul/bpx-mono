@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 // built on: that buildConsultContext with a min-window budget fits that window,
 // even when other members have larger windows. This is the invariant the fix
 // relies on, proven directly.
-import { buildConsultContext, type ContextBudget } from "../src/context-engine.js";
+import { buildConsultContext, summarizeLedger, type ContextBudget } from "../src/context-engine.js";
 import { userText } from "../src/context-engine.js";
 
 const BUDGET: ContextBudget = {
@@ -46,8 +46,14 @@ describe("council §I fix — min-window fit", () => {
 		expect(fit.estimatedTokens).toBeLessThanOrEqual(fit.maxInputTokens);
 		// And the budget was derived from the 32k window, not the 200k one.
 		expect(fit.maxInputTokens).toBe(32_000 - 4096);
-		// We actually dropped messages to get there (not a trivial fit).
-		expect(fit.omittedCount).toBeGreaterThan(0);
+		// We actually REDUCED the transcript to get there (not a trivial fit). Under
+		// the §E.1 evidence-aware fit these 100 messages classify as directives
+		// (pinned), so the reduction shows up as compression/clipping rather than
+		// dropping — pinned items retain a representation, never drop (RULE B). The
+		// old assertion pinned `omittedCount > 0`; the new fit legitimately hits the
+		// window via compression, so we assert real reduction happened either way.
+		const summary = summarizeLedger(fit.ledger);
+		expect(summary.compressed + summary.clipped + summary.dropped).toBeGreaterThan(0);
 	});
 
 	it("fits even when the smallest member is a tiny 8k CLI model", () => {
