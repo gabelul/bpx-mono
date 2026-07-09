@@ -49,16 +49,27 @@ pi install ./packages/bpx-consult
 
 ## The window bug, and the fix
 
-The reason this extension exists. Every consult path runs the conversation through a context engine before it reaches the advisor model:
+The reason this extension exists. The advisor extension I tried forwarded the whole session to the advisor without checking whether the advisor's *own* window could hold it — so my second opinion errored out at exactly the moment the session got long enough to need one. Every consult path here runs the conversation through a context engine first, and it fits to *that* advisor's real window — read live from the registry, never a global constant. Point a 32k flash-tier advisor at a 128k session and it fits. Point an 8k CLI advisor at the same session and it still fits. Council fits every member to the *smallest* window in the roster, so the weakest member can't overflow.
 
-1. **Strip** the in-flight `consult()` call. Providers reject orphan tool calls.
-2. **Cap** each message (user text, assistant text, tool args, tool results) with explicit `[truncated]` markers. Never silent drops.
-3. **Fit to a sliding window.** Keep the first few messages (task framing) and the last several (freshest evidence). Drop oldest-first with an `[omitted]` marker.
-4. **Reserve** tokens for the advisor's reply, derived live from *that* advisor's context window minus a response reserve.
+That's the guarantee. What changed in 0.2.0 is *how* it fits.
 
-The budget is read per-call from the advisor model's actual window via the registry, never a global constant. Point a 32k flash-tier advisor at a 128k session and it fits. Point an 8k CLI advisor at the same session and it still fits. Council fits every member to the *smallest* window in the roster so the weakest member can't overflow.
+### Evidence-aware fit (0.2.0)
 
-Every mode goes through this.
+The old fit was blunt: keep the first couple messages, keep the last several, drop the middle, char-cap what's left. It never overflowed — but "keep recent, drop old" is a lousy proxy for "keep what matters." In a long debugging session the line that explains why you're stuck is usually in the *middle*, and blindly char-truncating a message shreds the one stack trace or diff the advisor needed.
+
+So now the engine classifies before it cuts. Every message gets a deterministic tag — `directive`, `diff`, `failing-output`, `stack-trace`, `test`, `exploration`, and so on — from its role and content, **never from the model's own judgment** (the stuck model is the worst judge of what's safe to drop). Then it fills the window by priority, not by position:
+
+1. **Your question and task framing** — pinned, first.
+2. **The payload** — the latest failure and the latest diff, verbatim. This is the thing you're actually asking about.
+3. **Pinned artifacts** — reviewer findings, repeated-failure signatures.
+4. **Recent tail**, verbatim while there's room.
+5. **Older path** — compressed to one-line signals (`read x.ts`, `edit y.ts (+30/-5)`, `$ npm test (exit 1)`), then dropped.
+
+**Compress the path, preserve the payload.** Pinned items never get silently dropped — if one's too big it degrades (verbatim → signal → clipped-to-anchors with markers), and in the pathological case where even the essentials won't fit, it fails closed with a clean error instead of overflowing. Every drop, every clip is marked. The full design is in [SPEC §E](SPEC.md#§e--context-engine-v2-evidence-aware-fit--progressive-council-roadmap).
+
+### The ledger
+
+Because it now decides *what* to keep, it can tell you what it did. Every consult result carries a ledger — `{ kept, compressed, clipped, dropped }` counts plus the `fittedTokens` estimate. Check the tool-result details after a consult and you can see exactly how a 150k session got fitted into a 28k advisor: what survived verbatim, what got compressed to a signal, what fell off the end. It's the measuring tape — if you're wondering whether the fit is losing something it shouldn't, the ledger is where you look.
 
 ---
 
@@ -133,12 +144,14 @@ You can also fire a consult by just typing a phrase — no tool call, no slash c
 
 | Say something like… | Runs |
 |---|---|
-| "ask the council", "use the council", "council on this", "convene the council" | **council** |
+| "ask the council", "use the council", "council on this", "convene the council", "run the council" | **council** |
 | "ask the advisor", "second opinion", "get advice" | **solo** |
 | "debate this", "have them debate", "start a debate" | **debate** |
 | "gut check this", "gut-check" | **gut-check** |
 
 Matching is case-insensitive and word-boundaried. Add "about …" to focus it — "ask the council about the retry strategy" passes *the retry strategy* as the question. Phrase triggers only fire on your own interactive input in a trusted, enabled project, and they honor your `feedbackMode` (below). Because they're user-initiated, they're **not** subject to the per-turn consult cap.
+
+One deliberate non-trigger: a bare "the council" won't fire — it needs a verb ("ask/use/consult/run the council") or the "council on this" shape. Otherwise a passing mention ("what did the council say?") would spend real money on a council you didn't ask for.
 
 ---
 
@@ -181,6 +194,7 @@ What v1 does *not* have: per-member circuit-breaker with exponential backoff. Is
 
 ```jsonc
 {
+  "enabled": true,
   "defaultMode": "solo",
   "modes": {
     "solo":     { "model": "anthropic/claude-sonnet-4-6", "thinkingLevel": "high" },
@@ -199,11 +213,16 @@ What v1 does *not* have: per-member circuit-breaker with exponential backoff. Is
   "triggers": { "onDone": false, "whenStuck": 0 },
   "feedbackMode": "steer",
   "maxConsultsPerTurn": 3,
+  "disabledForModels": [],
   "contextBudget": { "responseReserveTokens": 4096 }
 }
 ```
 
+**`enabled`** (default `true`) is the master switch. Set it `false` to turn the whole extension off without uninstalling — the `consult` tool and triggers go dormant.
+
 **`maxConsultsPerTurn`** (default `3`, `0` = unlimited) is a soft cap on how many times *the model itself* may call `consult()` in a single turn. Hit the cap and the next call returns a cheap "cap reached" note instead of spending another advisor call — the model proceeds on its own judgment or you raise the cap in `/consult`. It counts only the model's own tool calls; phrase triggers and auto-triggers have their own guards and are never blocked by it. The counter resets each turn and on your next input.
+
+**`disabledForModels`** (default `[]`) turns consult off for specific *executor* models. Two shapes: a bare model key disables it outright (`"openai/gpt-5"`), or an object gates on effort — `{ "model": "anthropic/claude-opus-4-6", "minEffort": "high" }` keeps consult available only when that model is thinking at `high` or above, and off below it (so a cheap low-effort turn doesn't drag in an advisor). When disabled, `consult()` returns a short "disabled for this model" note instead of running.
 
 The defaults are pinned to specific model versions, which means they'll drift as Anthropic ships new ones. The registry supports tier aliases in some places; where it does, prefer an alias. Otherwise expect to update these periodically, or override `personas.*.defaultModel` with whatever you actually have authed.
 
@@ -225,6 +244,7 @@ The full design (including the decisions behind each of these) is in [SPEC.md on
 ## Prerequisites
 
 - pi 0.80+ (uses the `@earendil-works/pi-ai/compat` `completeSimple` entry, event handlers, `sendUserMessage`)
+- Node 22.19+ — pi's own packages require it, so this does too.
 - At least one provider authed via `/login`. The default roster uses Anthropic; override `personas.*.defaultModel` to match what you have.
 - For the CLI backend: `codex`, `claude`, or `opencode` installed and on PATH.
 
