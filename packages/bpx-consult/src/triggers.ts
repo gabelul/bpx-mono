@@ -33,7 +33,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { BpxConsultConfig, ConsultMode } from "./config.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, resolveFeedbackMode } from "./config.js";
 import { executeSolo } from "./solo.js";
 import { executeCouncil } from "./council.js";
 import { executeDebate } from "./debate.js";
@@ -107,7 +107,9 @@ export function registerTriggers(pi: ExtensionAPI): void {
 		if (!config.enabled) return { action: "continue" };
 		if (!ctx.isProjectTrusted()) return { action: "continue" }; // trust gate
 
-		const feedbackMode = config.feedbackMode ?? "steer";
+		// Per-mode override wins over the top-level default (e.g. "show council,
+		// steer gut-checks"). resolveFeedbackMode handles the precedence.
+		const feedbackMode = resolveFeedbackMode(config, parsed.mode);
 
 		if (feedbackMode === "show") {
 			state.autoRunning = true;

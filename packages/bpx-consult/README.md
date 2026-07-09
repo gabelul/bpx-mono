@@ -166,6 +166,17 @@ Advice comes back differently depending on who asked for it. `feedbackMode` (def
   - **show** — UI-only. You read it in a boxed "not sent to the model" message; the executor never sees it. In show mode a phrase trigger also **suppresses the agent run** — "show me, don't act" actually stops the turn (via pi's `{ action: "handled" }` input result).
 - **Auto-triggers (whenStuck / onDone)** → fixed delivery, independent of `feedbackMode`: whenStuck **steers** (so it doesn't interrupt), onDone queues a **followUp**.
 
+**Per-mode override.** `feedbackMode` can be set per mode as well as globally, and the per-mode value wins. So you can keep the top-level default at `steer` but set `modes.council.feedbackMode` to `show` — now "ask the council" gives you a read you act on yourself, while "second opinion" (solo) still steers. Any mode without its own `feedbackMode` inherits the top-level one, which falls back to `steer`.
+
+```jsonc
+{
+  "feedbackMode": "steer",              // default for every mode
+  "modes": {
+    "council": { "feedbackMode": "show" }  // …but council results are UI-only
+  }
+}
+```
+
 ---
 
 ## Backends

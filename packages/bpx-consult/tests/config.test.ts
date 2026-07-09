@@ -7,9 +7,11 @@ import {
 	DEFAULT_CONFIG,
 	isDisabledForModel,
 	loadConfig,
+	resolveFeedbackMode,
 	saveConfig,
 	bpxConfigPath,
 } from "../src/config.js";
+import type { BpxConsultConfig } from "../src/config.js";
 
 // Pin PI_CODING_AGENT_DIR at a temp dir for the duration of the suite so the
 // real ~/.pi/agent is never touched. bpxConfigPath() honours this env var.
@@ -162,5 +164,47 @@ describe("isDisabledForModel", () => {
 describe("BpxConsultConfigSchema", () => {
 	it("is an object schema", () => {
 		expect(BpxConsultConfigSchema.type).toBe("object");
+	});
+});
+
+describe("resolveFeedbackMode — per-mode override precedence", () => {
+	it("falls back to 'steer' when nothing is set", () => {
+		expect(resolveFeedbackMode({}, "solo")).toBe("steer");
+	});
+
+	it("uses the top-level feedbackMode when no per-mode override exists", () => {
+		const cfg: BpxConsultConfig = { feedbackMode: "pipe" };
+		expect(resolveFeedbackMode(cfg, "council")).toBe("pipe");
+	});
+
+	it("lets a per-mode feedbackMode beat the top-level default", () => {
+		const cfg: BpxConsultConfig = {
+			feedbackMode: "steer",
+			modes: { council: { feedbackMode: "show" } },
+		};
+		expect(resolveFeedbackMode(cfg, "council")).toBe("show");
+		// other modes still inherit the top-level default
+		expect(resolveFeedbackMode(cfg, "solo")).toBe("steer");
+	});
+
+	it("maps the 'gut-check' mode to the gutCheck config key", () => {
+		const cfg: BpxConsultConfig = {
+			feedbackMode: "steer",
+			modes: { gutCheck: { feedbackMode: "pipe" } },
+		};
+		expect(resolveFeedbackMode(cfg, "gut-check")).toBe("pipe");
+	});
+
+	it("resolves each mode independently", () => {
+		const cfg: BpxConsultConfig = {
+			feedbackMode: "steer",
+			modes: {
+				solo: { feedbackMode: "pipe" },
+				council: { feedbackMode: "show" },
+			},
+		};
+		expect(resolveFeedbackMode(cfg, "solo")).toBe("pipe");
+		expect(resolveFeedbackMode(cfg, "council")).toBe("show");
+		expect(resolveFeedbackMode(cfg, "debate")).toBe("steer");
 	});
 });

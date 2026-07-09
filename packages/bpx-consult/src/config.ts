@@ -378,6 +378,37 @@ function mergeDefaults(user: BpxConsultConfig): BpxConsultConfig {
 	};
 }
 
+/**
+ * Resolve the feedback mode for a consult we deliver on the user's behalf.
+ *
+ * Precedence: a per-mode override (`modes.<mode>.feedbackMode`) beats the
+ * top-level `feedbackMode`, which beats the "steer" fallback. Lets a user say
+ * "show me council results but steer my gut-checks" without a global default.
+ *
+ * Only the injection paths (phrase triggers, manual standalone runs) route
+ * through here — the model's own `consult()` tool call always returns a tool
+ * result, and auto-triggers hardcode their own delivery, so neither is affected.
+ *
+ * Note the key shim: ConsultMode spells it `gut-check`, the config object keys it
+ * `gutCheck`.
+ *
+ * @param config - the resolved config
+ * @param mode - the consult mode being delivered
+ * @returns the feedback mode to hand to `deliver()`
+ */
+export function resolveFeedbackMode(config: BpxConsultConfig, mode: ConsultMode): FeedbackMode {
+	const modes = config.modes;
+	const perMode =
+		mode === "solo"
+			? modes?.solo?.feedbackMode
+			: mode === "council"
+				? modes?.council?.feedbackMode
+				: mode === "debate"
+					? modes?.debate?.feedbackMode
+					: modes?.gutCheck?.feedbackMode; // "gut-check"
+	return perMode ?? config.feedbackMode ?? "steer";
+}
+
 // ---------------------------------------------------------------------------
 // Disabled-for-models — policy helper (mirrors rpiv-advisor's shape)
 // ---------------------------------------------------------------------------
