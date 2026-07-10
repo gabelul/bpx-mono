@@ -44,7 +44,7 @@ If members strongly disagree, surface the disagreement. Never manufacture agreem
 Resilience — **v1**: per-member wall-clock timeout (`council.timeoutMs`, default 120s) + `Promise.allSettled` isolation. A member that errors, times out, or hangs drops to a fallback verdict without touching its siblings or hanging the council. **v1.1**: per-member circuit breaker (skip a backend after repeated failures) + bounded exponential backoff with jitter. (The earlier draft described breaker/backoff as v1 — that was aspirational; v1 ships the timeout + isolation only.)
 
 ### debate
-Sequential and adversarial. Advocate proposes → critic attacks → advocate rebuts. Two rounds max by default, configurable. The attack step wraps the prior position in a "critically reassess, do not reflexively agree" frame so the critic genuinely stress-tests rather than rubber-stamps. For controversial calls where you want the strongest case on both sides before you decide.
+Sequential and adversarial. Advocate proposes → critic attacks → advocate rebuts. Rounds are configurable 1–4 (`modes.debate.rounds`), default 2. The attack step wraps the prior position in a "critically reassess, do not reflexively agree" frame so the critic genuinely stress-tests rather than rubber-stamps. For controversial calls where you want the strongest case on both sides before you decide.
 
 ### gut-check
 One cheap fast model, terse output, low token budget. "Does this smell off?" Used before you do something you're 90% sure about but want a sanity check. Configured at `modes.gutCheck` (default a flash-tier model, `terse: true`).
@@ -187,13 +187,13 @@ Triggers respect a per-session `autoReviewedThisRound` flag (same name as pi-ext
 
 How the advisor's response reaches the executor:
 
-- **show** — UI-only (`ctx.ui.notify`). You read it, executor never sees it.
+- **show** — UI-only. Rendered via a registered message renderer (`pi.sendMessage({ customType })` + `registerMessageRenderer`), clearly marked "not sent to the model"; the executor never sees it. On the phrase-trigger path, show *also* suppresses the agent run (`{ action: "handled" }` from the input handler) — "show me, don't act" actually stops the turn.
 - **pipe** — injected as a user message: `pi.sendUserMessage(text, { deliverAs: "followUp" })`.
 - **steer** — injected as a steering message mid-run: `pi.sendUserMessage(text, { deliverAs: "steer" })`. The killer feature for unblocking yourself without leaving the flow.
 
-The API and the auto-resolve logic already exist in `pi-extensions/advisor` (`resolveAdviseMode`): default to `steer` when the agent is active, `pipe` when idle, `show` only when explicit. Reuse it, including its re-entrancy guard so an auto-trigger can't recurse into itself.
+**Scope:** `feedbackMode` governs only the paths bpx-consult injects on your behalf — phrase triggers and manual standalone runs (`deliver()` in `src/deliver.ts`). The model's own `consult()` tool call always returns a normal tool result (it asked, it gets it back). Auto-triggers hardcode their own delivery (whenStuck → steer, onDone → followUp), independent of `feedbackMode`.
 
-Default `steer`. The global default lives at `feedbackMode`; per-mode override under `modes.*.feedbackMode` (§X).
+Resolution is a static config setting, not the dynamic active/idle auto-selection an earlier draft imagined. Default `steer`. The global default lives at top-level `feedbackMode`; a per-mode override at `modes.<mode>.feedbackMode` wins over it (`resolveFeedbackMode`, §X) — so you can "show council, steer gut-checks".
 
 ## §X — Config
 
