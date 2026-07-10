@@ -67,7 +67,12 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          # Node 24 bundles npm 11, which has OIDC trusted publishing AND a
+          # working provenance/sigstore. We deliberately do NOT self-upgrade npm
+          # (`npm i -g npm@latest`) — that chases a moving target, and a broken
+          # global install of npm@latest is exactly what crashed the 0.3.0 publish
+          # with "Cannot find module 'sigstore'". Use the distro's bundled npm.
+          node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
@@ -75,9 +80,6 @@ jobs:
       # Gate publish on typecheck + tests, same as CI. Don't ship a broken build.
       - run: npx tsc --noEmit -p packages/bpx-consult/tsconfig.json
       - run: npm test --workspace @booplex/bpx-consult
-
-      - name: Update npm for trusted publishing
-        run: npm install -g npm@latest
 
       - name: Publish package
         run: npm publish --workspace @booplex/bpx-consult --provenance --access public
