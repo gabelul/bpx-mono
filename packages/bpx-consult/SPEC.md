@@ -285,7 +285,7 @@ bpx-consult is mostly assembly. Before writing anything new, check here.
 | Char caps + transcript compaction | `pi-advisor/src/advisor-messages.ts` | `clampText`, `summarizeUserContent`, first-2 + last-N omission |
 | Stage + signal detection | `pi-advisor/src/advisor-signals.ts` | `detectStage`, `buildExecutorSignals`, `isVerificationCommand` |
 | Loop-detect fingerprint | `pi-extensions/advisor/advisor.ts` | `${toolName}:${JSON.stringify(input)}`, `autoReviewedThisRound` |
-| Steering injection | `pi-extensions/advisor` | `pi.sendUserMessage(text, { deliverAs })`, `resolveAdviseMode` |
+| Steering injection | `pi-extensions/advisor` | `pi.sendUserMessage(text, { deliverAs })` (the pattern; `deliver()` is bpx-consult's own — the `resolveAdviseMode` auto-selection was not reused) |
 | Trust + config precedence | `pi-extensions/advisor` | `contextProjectTrusted`, `resolveEffectiveConfig`, `validateAdvisorConfig` |
 | CLI timeout pattern (final impl uses Node `spawn` + stdin, see §B) | `rpiv-args/args.ts` | `resolveShellTimeoutMs`, `res.killed` |
 | Fuzzy picker UI | `rpiv-advisor/{fuzzy,advisor-ui}.ts` | `fuzzyScore`, `filterItems`, `showFilterablePicker`, `selectListTheme` |
