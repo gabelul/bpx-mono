@@ -30,6 +30,7 @@ import { showFilterablePicker } from "./picker.js";
 
 const CHECKMARK = " ✓";
 const MENU_DONE = "__done__";
+const MENU_BACK = "__back__";
 
 const MODES = ["solo", "council", "debate", "gut-check"] as const;
 const BASE_EFFORT_LEVELS: ThinkingLevel[] = ["minimal", "low", "medium", "high"];
@@ -91,6 +92,38 @@ export function buildWhenStuckItems(current: number | undefined): SelectItem[] {
 	});
 }
 
+/** Stance picker items (for/against/neutral — biases what a persona hunts for). */
+export function buildStanceItems(current: string | undefined): SelectItem[] {
+	return (["for", "against", "neutral"] as const).map((stance) => ({
+		value: stance,
+		label: stance === current ? `${stance}${CHECKMARK}` : stance,
+	}));
+}
+
+/**
+ * Council submenu items: seated members, roster management, synthesizer, back.
+ * Members come from `council.members` (the roster); re-enable candidates are
+ * personas that exist but aren't seated.
+ */
+export function buildCouncilMenu(config: BpxConsultConfig): SelectItem[] {
+	const members = config.modes?.council?.members ?? [];
+	const personas = config.personas ?? {};
+	const unseated = Object.keys(personas).filter((n) => !members.includes(n));
+	const items: SelectItem[] = [];
+	for (const name of members) {
+		items.push({ value: `member.${name}`, label: `${name} — model: ${describeModel(personas[name]?.defaultModel)}` });
+	}
+	items.push({ value: "disable", label: members.length ? "Disable a member…" : "(no members seated)" });
+	items.push({
+		value: "enable",
+		label: unseated.length ? `Enable a persona… (${unseated.length} available)` : "Enable a persona… (none available)",
+	});
+	items.push({ value: "add", label: "Add a new persona…" });
+	items.push({ value: "council.synth", label: `Synthesizer model: ${describeModel(config.modes?.council?.synthesizer?.model)}` });
+	items.push({ value: MENU_BACK, label: "Back" });
+	return items;
+}
+
 // ---------------------------------------------------------------------------
 // Main menu (one row per setting, current value surfaced in the label)
 // ---------------------------------------------------------------------------
@@ -114,10 +147,15 @@ export function buildMainMenu(config: BpxConsultConfig): SelectItem[] {
 		{ value: "gutCheck.effort", label: `Gut-check effort: ${gut?.thinkingLevel ?? "(default)"}` },
 	];
 
-	// One row per persona (dynamic — user-defined personas show too).
-	for (const [name, persona] of Object.entries(personas)) {
-		items.push({ value: `persona.${name}`, label: `Council — ${name} model: ${describeModel(persona.defaultModel)}` });
+	// One row per SEATED council member (driven by the roster, not the persona
+	// map) — so the rows reflect who's actually running, and a disabled member
+	// disappears here until re-enabled.
+	const members = council?.members ?? [];
+	for (const name of members) {
+		const modelKeyP = personas[name]?.defaultModel;
+		items.push({ value: `persona.${name}`, label: `Council — ${name} model: ${describeModel(modelKeyP)}` });
 	}
+	items.push({ value: "council.manage", label: "Council: enable / disable / add persona…" });
 
 	if (council?.synthesizer) {
 		items.push({ value: "council.synth", label: `Council — synthesizer model: ${describeModel(council.synthesizer.model)}` });
@@ -195,6 +233,13 @@ export async function runConsultConfigurator(ctx: ExtensionContext, options: Run
 		});
 
 		if (choice === null || choice === MENU_DONE) return;
+
+		// Council roster management is a sub-loop that persists its own changes.
+		if (choice === "council.manage") {
+			await runCouncilSubmenu(ctx, options, available);
+			config = loadConfig(options);
+			continue;
+		}
 
 		const handled = await dispatch(ctx, choice, config, available);
 		if (!handled) continue; // user cancelled the sub-picker — back to menu, no save
@@ -314,18 +359,154 @@ async function dispatch(
 		}
 
 		default: {
-			// persona.<name>
+			// persona.<name> — set a seated member's model
 			if (choice.startsWith("persona.")) {
 				const name = choice.slice("persona.".length);
 				config.personas ??= {};
 				const persona = config.personas[name] ?? {};
-				const current = persona.defaultModel;
-				const picked = await pickModel(ctx, available, current, `Council — ${name} model`);
+				const picked = await pickModel(ctx, available, persona.defaultModel, `Council — ${name} model`);
 				if (picked === null) return null;
 				config.personas[name] = { ...persona, defaultModel: picked };
 				return `${name} model → ${describeModel(picked)}`;
 			}
-			return null;
+
+		return null;
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Council roster management submenu (enable / disable / add / assign)
+// ---------------------------------------------------------------------------
+
+/** Default system prompt for a freshly-created persona. applyStance layers the
+ * stance framing on top, so the base just names the lens. */
+function defaultPersonaPrompt(name: string): string {
+	return `You are the ${name} advisor on the bpx-consult council. Bring your specific lens to the question, argue from evidence, and give a clear call.`;
+}
+
+/**
+ * Council roster submenu. enable/disable = membership in `council.members`
+ * (the persona definition persists, so re-enabling keeps its model). Adding a
+ * persona creates the definition + seats it. Each change persists immediately
+ * and the submenu reopens. Exits on Back or cancel.
+ */
+export async function runCouncilSubmenu(
+	ctx: ExtensionContext,
+	options: LoadConfigOptions,
+	available: Model<Api>[],
+): Promise<void> {
+	let config = loadConfig(options);
+
+	for (;;) {
+		config.modes ??= {};
+		config.modes.council ??= {};
+		config.personas ??= {};
+
+		const choice = await showFilterablePicker(ctx, {
+			title: "Council members",
+			proseLines: ["Seat or unseat personas, assign each a model, or add a new one. Changes save immediately."],
+			items: buildCouncilMenu(config),
+		});
+		if (choice === null || choice === MENU_BACK) return;
+
+		const members = config.modes.council!.members ?? [];
+		const personas = config.personas!;
+
+		// member.<name> — assign model
+		if (choice.startsWith("member.")) {
+			const name = choice.slice("member.".length);
+			const picked = await pickModel(ctx, available, personas[name]?.defaultModel, `${name} model`);
+			if (picked === null) continue;
+			personas[name] = { ...personas[name], defaultModel: picked };
+			if (!persist(ctx, config, options)) return;
+			config = loadConfig(options);
+			continue;
+		}
+
+		// Disable a member — remove from roster (persona def kept for re-enable)
+		if (choice === "disable") {
+			if (members.length === 0) continue;
+			const picked = await showFilterablePicker(ctx, {
+				title: "Disable a member (unseat)",
+				proseLines: ["The persona definition is kept, so you can re-enable it later with its model intact."],
+				items: members.map((n) => ({ value: n, label: n })),
+			});
+			if (picked === null) continue;
+			config.modes.council!.members = members.filter((n) => n !== picked);
+			if (!persist(ctx, config, options)) return;
+			config = loadConfig(options);
+			ctx.ui.notify(`Unseated ${picked}`, "info");
+			continue;
+		}
+
+		// Enable a persona — re-seat one that exists but isn't in the roster
+		if (choice === "enable") {
+			const unseated = Object.keys(personas).filter((n) => !members.includes(n));
+			if (unseated.length === 0) {
+				ctx.ui.notify("No personas available to enable. Add one first.", "info");
+				continue;
+			}
+			const picked = await showFilterablePicker(ctx, {
+				title: "Enable a persona (seat it)",
+				items: unseated.map((n) => ({ value: n, label: `${n} — ${describeModel(personas[n]?.defaultModel)}` })),
+			});
+			if (picked === null) continue;
+			config.modes.council!.members = [...members, picked];
+			if (!persist(ctx, config, options)) return;
+			config = loadConfig(options);
+			ctx.ui.notify(`Seated ${picked}`, "info");
+			continue;
+		}
+
+		// Add a new persona — name (text input) → stance → model → create + seat
+		if (choice === "add") {
+			const name = (await ctx.ui.input("New persona name", "e.g. security, qa, reviewer"))?.trim();
+			if (!name) continue;
+			if (personas[name]) {
+				ctx.ui.notify(`"${name}" already exists. Enable it instead, or pick a different name.`, "warning");
+				continue;
+			}
+			const stance = await showFilterablePicker(ctx, {
+				title: `Stance for ${name}`,
+				proseLines: ["Stance biases what the persona hunts for — never its verdict. A 'for' stance can still say don't do this."],
+				items: buildStanceItems(undefined),
+				preferredValue: "neutral",
+			});
+			if (stance === null) continue;
+			const modelPicked = await pickModel(ctx, available, undefined, `${name} model`);
+			if (modelPicked === null) continue;
+			personas[name] = {
+				name,
+				stance: stance as "for" | "against" | "neutral",
+				defaultModel: modelPicked,
+				systemPrompt: defaultPersonaPrompt(name),
+			};
+			config.modes.council!.members = [...members, name];
+			if (!persist(ctx, config, options)) return;
+			config = loadConfig(options);
+			ctx.ui.notify(`Added + seated ${name} (${stance}, ${describeModel(modelPicked)})`, "info");
+			continue;
+		}
+
+		// Synthesizer model
+		if (choice === "council.synth") {
+			config.modes.council!.synthesizer ??= {};
+			const picked = await pickModel(ctx, available, config.modes.council!.synthesizer.model, "Council synthesizer");
+			if (picked === null) continue;
+			config.modes.council!.synthesizer = { ...config.modes.council!.synthesizer, model: picked };
+			if (!persist(ctx, config, options)) return;
+			config = loadConfig(options);
+			continue;
+		}
+	}
+}
+
+/** Persist config, notify on failure. Returns false to signal the caller should abort. */
+function persist(ctx: ExtensionContext, config: BpxConsultConfig, _options: LoadConfigOptions): boolean {
+	if (!saveConfig(config)) {
+		ctx.ui.notify(MSG_PERSIST_FAILED, "error");
+		return false;
+	}
+	return true;
 }

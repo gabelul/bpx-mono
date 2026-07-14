@@ -84,7 +84,9 @@ Because it now decides *what* to keep, it can tell you what it did. Every consul
 
 Call `consult()` with no args and solo runs. Pass `mode: "council"` (or `debate`, `gut-check`) to pick another.
 
-Type **`/consult`** to configure everything interactively — no file editing. It opens a menu: default mode, solo and gut-check models and effort, each council persona's model, the synthesizer, both triggers, and enable/disable. Pick a setting, choose from a fuzzy-filterable list of the models you actually have authed, and the change saves immediately and the menu reopens so you can set several in one go. (`/consult status` prints the old read-out if you just want a glance.) Advanced settings — context-budget char caps, timeouts, CLI backends — still live in the config file.
+Type **`/consult`** to configure everything interactively — no file editing. It opens a menu: default mode, solo and gut-check models and effort, the council roster, both triggers, and enable/disable. Pick a setting, choose from a fuzzy-filterable list of the models you actually have authed, and the change saves immediately and the menu reopens so you can set several in one go. (`/consult status` prints the old read-out if you just want a glance.)
+
+The **Council members** submenu seats and unseats personas, assigns each a model, and creates new ones — type a name, pick a stance (for/against/neutral), pick a model, and it's seated. Enable/disable is just membership in the roster, so unseating a persona keeps its definition for later. The default roster seats architect/critic/simplifier on distinct model tiers so parallel calls don't all hammer one provider. Advanced settings — context-budget char caps, timeouts, CLI backends — still live in the config file.
 
 ---
 

@@ -344,6 +344,26 @@ function isObject(v: unknown): v is Record<string, unknown> {
 	return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
+/**
+ * Merge default personas under user personas, per-key.
+ *
+ * Defaults (architect/critic/simplifier with their tier-distinct models) form the
+ * base; a user persona with the same name overrides field-by-field (so overriding
+ * just architect's model keeps its stance + prompt); a user persona with a new
+ * name is added whole. This is what makes the default roster actually surface
+ * when the user's config has no personas block — without it, council members
+ * fall back to the solo model, all hit one provider in parallel, and abort.
+ */
+function mergePersonas(
+	defaults: BpxConsultConfig["personas"],
+	user: BpxConsultConfig["personas"],
+): NonNullable<BpxConsultConfig["personas"]> {
+	const out: NonNullable<BpxConsultConfig["personas"]> = {};
+	for (const [name, p] of Object.entries(defaults ?? {})) out[name] = { ...p };
+	for (const [name, p] of Object.entries(user ?? {})) out[name] = { ...out[name], ...p };
+	return out;
+}
+
 /** Persist config. Returns true on successful write (see saveJsonConfig contract). */
 export function saveConfig(config: BpxConsultConfig): boolean {
 	return saveJsonConfig(bpxConfigPath(), config);
@@ -368,7 +388,7 @@ function mergeDefaults(user: BpxConsultConfig): BpxConsultConfig {
 			council: { ...DEFAULT_CONFIG.modes?.council, ...user.modes?.council },
 			debate: { ...DEFAULT_CONFIG.modes?.debate, ...user.modes?.debate },
 		},
-		personas: user.personas ?? {},
+		personas: mergePersonas(DEFAULT_CONFIG.personas, user.personas),
 		backends: user.backends ?? {},
 		triggers: { ...DEFAULT_CONFIG.triggers, ...user.triggers },
 		feedbackMode: user.feedbackMode ?? DEFAULT_CONFIG.feedbackMode,

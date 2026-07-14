@@ -13,7 +13,7 @@
 
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_CONFIG } from "../src/config.js";
+import { DEFAULT_CONFIG, loadConfig } from "../src/config.js";
 
 // Stub getSupportedThinkingLevels: return whatever the test programs.
 const supportedMock = vi.fn<(m: Model<Api> | undefined) => ThinkingLevel[]>();
@@ -28,7 +28,9 @@ const {
 	buildModeItems,
 	buildToggleItems,
 	buildWhenStuckItems,
+	buildStanceItems,
 	buildMainMenu,
+	buildCouncilMenu,
 } = await import("../src/consult-ui.js");
 
 /** Minimal Model stub — modelKey reads {provider, id}; pickers read .name/.provider. */
@@ -133,9 +135,15 @@ describe("buildMainMenu", () => {
 		expect(items.some((i) => i.label.startsWith("Solo model:"))).toBe(true);
 	});
 
-	it("adds one row per persona, including user-defined ones", () => {
+	it("adds one row per SEATED member (roster-driven), including user-defined ones", () => {
+		// Rows come from council.members, not the personas map — so seating a
+		// user-defined persona means adding it to the roster too.
 		const config = {
 			...DEFAULT_CONFIG,
+			modes: {
+				...DEFAULT_CONFIG.modes,
+				council: { ...DEFAULT_CONFIG.modes!.council!, members: ["architect", "security"] },
+			},
 			personas: {
 				architect: { defaultModel: "anthropic/claude-opus-4-6" },
 				security: { defaultModel: "anthropic/claude-sonnet-4-6" }, // user-defined seat
@@ -147,9 +155,25 @@ describe("buildMainMenu", () => {
 		expect(items.filter((i) => i.value.startsWith("persona.")).length).toBe(2);
 	});
 
-	it("omits persona rows entirely when personas is empty", () => {
-		const items = buildMainMenu({ ...DEFAULT_CONFIG, personas: {} });
+	it("shows one row per roster entry even when the persona has no definition", () => {
+		// A member in the roster whose persona def is missing still renders
+		// (model falls back to '(default)'). Council resolves it the same way.
+		const items = buildMainMenu({
+			...DEFAULT_CONFIG,
+			personas: {},
+			modes: { ...DEFAULT_CONFIG.modes, council: { ...DEFAULT_CONFIG.modes!.council!, members: ["architect"] } },
+		});
+		expect(items.filter((i) => i.value === "persona.architect").length).toBe(1);
+	});
+
+	it("omits member rows when the roster is empty", () => {
+		const items = buildMainMenu({
+			...DEFAULT_CONFIG,
+			modes: { ...DEFAULT_CONFIG.modes, council: { ...DEFAULT_CONFIG.modes!.council!, members: [] } },
+		});
 		expect(items.filter((i) => i.value.startsWith("persona.")).length).toBe(0);
+		// the management entry is always present
+		expect(items.some((i) => i.value === "council.manage")).toBe(true);
 	});
 
 	it("shows the synthesizer row only when a synthesizer is configured", () => {
@@ -168,5 +192,87 @@ describe("buildMainMenu", () => {
 		const items = buildMainMenu({ ...DEFAULT_CONFIG, modes: { ...DEFAULT_CONFIG.modes!, solo: { model: "garbage-no-slash" } } });
 		const soloRow = items.find((i) => i.value === "solo.model");
 		expect(soloRow?.label).toContain("garbage-no-slash");
+	});
+});
+
+describe("buildStanceItems", () => {
+	it("lists for/against/neutral and marks the current", () => {
+		const items = buildStanceItems("against");
+		expect(items.map((i) => i.value)).toEqual(["for", "against", "neutral"]);
+		expect(items.find((i) => i.value === "against")?.label).toContain("✓");
+	});
+});
+
+describe("buildCouncilMenu", () => {
+	it("lists one entry per seated member with its model", () => {
+		const items = buildCouncilMenu(DEFAULT_CONFIG);
+		expect(items.some((i) => i.value === "member.architect")).toBe(true);
+		expect(items.some((i) => i.value === "member.critic")).toBe(true);
+		expect(items.some((i) => i.value === "member.simplifier")).toBe(true);
+		// architect's default model shows in its row
+		expect(items.find((i) => i.value === "member.architect")?.label).toMatch(/opus/i);
+	});
+
+	it("always offers disable / enable / add / synthesizer / back", () => {
+		const items = buildCouncilMenu(DEFAULT_CONFIG);
+		expect(items.some((i) => i.value === "disable")).toBe(true);
+		expect(items.some((i) => i.value === "enable")).toBe(true);
+		expect(items.some((i) => i.value === "add")).toBe(true);
+		expect(items.some((i) => i.value === "council.synth")).toBe(true);
+		expect(items[items.length - 1]?.value).toBe("__back__");
+	});
+
+	it("counts unseated personas in the enable label", () => {
+		// Two personas defined but only one seated → 1 available to enable.
+		const config = {
+			...DEFAULT_CONFIG,
+			modes: { ...DEFAULT_CONFIG.modes, council: { ...DEFAULT_CONFIG.modes!.council!, members: ["architect"] } },
+			personas: {
+				architect: { defaultModel: "anthropic/claude-opus-4-6" },
+				critic: { defaultModel: "anthropic/claude-sonnet-4-6" },
+			},
+		};
+		const enableRow = buildCouncilMenu(config).find((i) => i.value === "enable");
+		expect(enableRow?.label).toMatch(/1 available/);
+	});
+
+	it("says 'none available' to enable when every persona is seated", () => {
+		const enableRow = buildCouncilMenu(DEFAULT_CONFIG).find((i) => i.value === "enable");
+		// default config seats all three default personas
+		expect(enableRow?.label).toMatch(/none available/);
+	});
+
+	it("renders an empty-roster council without crashing", () => {
+		const config = {
+			...DEFAULT_CONFIG,
+			modes: { ...DEFAULT_CONFIG.modes, council: { ...DEFAULT_CONFIG.modes!.council!, members: [] } },
+			personas: {},
+		};
+		const items = buildCouncilMenu(config);
+		expect(items.some((i) => i.value === "disable")).toBe(true);
+		expect(items.filter((i) => i.value.startsWith("member.")).length).toBe(0);
+	});
+});
+
+	describe("regression: default personas surface through loadConfig", () => {
+	it("an empty config yields the 3 default tier-distinct personas", () => {
+		// The bug: mergeDefaults did `personas: user.personas ?? {}`, dropping the
+		// bundled roster → council members fell back to the solo model → same
+		// provider → parallel rate-limit abort. Fixed by merging defaults per-key.
+		const orig = process.env.PI_CODING_AGENT_DIR;
+		const tmp = `/tmp/bpx-persona-reg-${process.pid}`;
+		const { rmSync, mkdirSync } = require("node:fs");
+		rmSync(tmp, { recursive: true, force: true });
+		mkdirSync(tmp, { recursive: true });
+		process.env.PI_CODING_AGENT_DIR = tmp;
+		try {
+			const c = loadConfig({});
+			expect(Object.keys(c.personas ?? {}).sort()).toEqual(["architect", "critic", "simplifier"]);
+			expect(c.personas!.architect!.defaultModel).toMatch(/opus/i);
+			expect(c.personas!.critic!.defaultModel).toMatch(/sonnet/i);
+			expect(c.personas!.simplifier!.defaultModel).toMatch(/haiku/i);
+		} finally {
+			process.env.PI_CODING_AGENT_DIR = orig;
+		}
 	});
 });
