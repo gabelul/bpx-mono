@@ -26,6 +26,8 @@ import { modelKey, parseModelKey } from "@juicesharp/rpiv-config";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import type { BpxConsultConfig } from "./config.js";
 import { loadConfig, saveConfig, type LoadConfigOptions } from "./config.js";
+import { callAdvisor, resolveAdvisor } from "./advisor.js";
+import { buildGeneratePrompt, GEN_SYSTEM_PROMPT, parsePersonaJson } from "./persona-gen.js";
 import { showFilterablePicker } from "./picker.js";
 
 const CHECKMARK = " ✓";
@@ -119,6 +121,7 @@ export function buildCouncilMenu(config: BpxConsultConfig): SelectItem[] {
 		label: unseated.length ? `Enable a persona… (${unseated.length} available)` : "Enable a persona… (none available)",
 	});
 	items.push({ value: "add", label: "Add a new persona…" });
+	items.push({ value: "add.ai", label: "Add a persona (AI-generated)…" });
 	items.push({ value: "council.synth", label: `Synthesizer model: ${describeModel(config.modes?.council?.synthesizer?.model)}` });
 	items.push({ value: MENU_BACK, label: "Back" });
 	return items;
@@ -386,6 +389,97 @@ function defaultPersonaPrompt(name: string): string {
 }
 
 /**
+ * AI-generated persona flow: describe focus → pick generator model → model
+ * drafts {name, stance, systemPrompt} → confirm or regenerate → create + seat
+ * on the generator model. Returns true if a persona was created (caller
+ * persists + reloads), false otherwise (cancel / parse failure).
+ */
+async function runGeneratePersona(
+	ctx: ExtensionContext,
+	config: BpxConsultConfig,
+	available: Model<Api>[],
+): Promise<boolean> {
+	const description = (await ctx.ui.input("Describe this advisor's focus", "e.g. security vulnerabilities, cost and ROI, API design"))?.trim();
+	if (!description) return false;
+
+	const defaultGen = config.modes?.solo?.model;
+	const genKey = await pickModel(ctx, available, defaultGen, "Model to draft the persona");
+	if (genKey === null) return false;
+
+	const advisor = resolveAdvisor(ctx, genKey);
+	if (!advisor) {
+		ctx.ui.notify(`Couldn't resolve ${genKey}. Pick a model you have authed.`, "error");
+		return false;
+	}
+
+	config.personas ??= {};
+	config.modes ??= {};
+	config.modes.council ??= {};
+	const personas = config.personas;
+	let members = config.modes.council.members ?? [];
+
+	// Regenerate loop: draft → confirm → (regen | create | cancel).
+	for (;;) {
+		ctx.ui.notify(`Generating persona with ${describeModel(genKey)}…`, "info");
+		const result = await callAdvisor({
+			ctx,
+			advisor,
+			systemPrompt: GEN_SYSTEM_PROMPT,
+			messages: [{ role: "user", content: buildGeneratePrompt(description), timestamp: Date.now() }],
+			thinkingLevel: "medium",
+			signal: undefined,
+		});
+
+		if (result.stopReason === "error" || !result.text) {
+			ctx.ui.notify(`Generation failed: ${result.errorMessage ?? result.stopReason}`, "error");
+			return false;
+		}
+
+		const parsed = parsePersonaJson(result.text);
+		if (!parsed.ok) {
+			const retry = await showFilterablePicker(ctx, {
+				title: "Couldn't parse the draft",
+				proseLines: [parsed.error, "The model's reply wasn't valid persona JSON. Regenerate or cancel."],
+				items: [
+					{ value: "regen", label: "Regenerate" },
+					{ value: "cancel", label: "Cancel" },
+				],
+			});
+			if (retry === "regen") continue;
+			return false;
+		}
+
+		const { name, stance, systemPrompt } = parsed.persona;
+		const nameClash = !!personas[name];
+		const confirm = await showFilterablePicker(ctx, {
+			title: `Create "${name}"?`,
+			proseLines: [
+				`Stance: ${stance}`,
+				`Model: ${describeModel(genKey)}`,
+				`Prompt: ${systemPrompt}`,
+				...(nameClash ? [`Note: a persona named "${name}" already exists — creating will overwrite it.`] : []),
+			],
+			items: [
+				{ value: "create", label: nameClash ? `Overwrite + seat ${name}` : `Create + seat ${name}` },
+				{ value: "regen", label: "Regenerate" },
+				{ value: "cancel", label: "Cancel" },
+			],
+		});
+
+		if (confirm === "regen") continue;
+		if (confirm !== "create") return false;
+
+		personas[name] = { name, stance, defaultModel: genKey, systemPrompt };
+		if (!members.includes(name)) {
+			members = [...members, name];
+			config.modes.council!.members = members;
+		}
+		ctx.ui.notify(`Added + seated ${name} (${stance}, ${describeModel(genKey)})`, "info");
+		return true;
+	}
+}
+
+/**
  * Council roster submenu. enable/disable = membership in `council.members`
  * (the persona definition persists, so re-enabling keeps its model). Adding a
  * persona creates the definition + seats it. Each change persists immediately
@@ -486,6 +580,17 @@ export async function runCouncilSubmenu(
 			if (!persist(ctx, config, options)) return;
 			config = loadConfig(options);
 			ctx.ui.notify(`Added + seated ${name} (${stance}, ${describeModel(modelPicked)})`, "info");
+			continue;
+		}
+
+		// Add a persona (AI-generated) — describe focus → pick generator model →
+		// model drafts {name, stance, systemPrompt} → confirm/regenerate → seat.
+		if (choice === "add.ai") {
+			const created = await runGeneratePersona(ctx, config, available);
+			if (created) {
+				if (!persist(ctx, config, options)) return;
+				config = loadConfig(options);
+			}
 			continue;
 		}
 
