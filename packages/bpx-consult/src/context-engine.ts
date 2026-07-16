@@ -265,6 +265,62 @@ export function applyCharCaps(messages: Message[], budget: ContextBudget): Messa
  * is the §P fix. pi-advisor's `maxMessages` is a guess at the window; we read
  * the real window per-call instead.
  */
+/**
+ * Repair tool_use / tool_result pairing after window-fit truncation.
+ *
+ * The sliding window keeps first-N + last-M and drops the middle. That can
+ * split a pair: a toolCall in the dropped middle with its toolResult in the
+ * kept tail (orphan result), or a toolCall in the kept head/tail with its
+ * toolResult dropped (dangling call). Anthropic and other strict providers
+ * reject both with a 400 ("unexpected tool_use_id" / missing tool_result) —
+ * the exact §P failure the extension exists to prevent. Truncation reopened
+ * it; this closes it again.
+ *
+ * Bidirectional: drop any toolResult whose call isn't in the kept window, and
+ * drop any toolCall whose result isn't either. An assistant message emptied by
+ * call-dropping is removed whole. Idempotent.
+ */
+export function repairToolPairing(messages: Message[]): Message[] {
+	// Call ids present in kept assistant messages.
+	const presentCallIds = new Set<string>();
+	for (const m of messages) {
+		if (m.role === "assistant") {
+			for (const b of m.content) {
+				if (b.type === "toolCall" && typeof b.id === "string") presentCallIds.add(b.id);
+			}
+		}
+	}
+	// Call ids that still have a kept tool-result.
+	const resolvedCallIds = new Set<string>();
+	for (const m of messages) {
+		if (m.role === "toolResult" && typeof m.toolCallId === "string" && presentCallIds.has(m.toolCallId)) {
+			resolvedCallIds.add(m.toolCallId);
+		}
+	}
+
+	const repaired: Message[] = [];
+	for (const m of messages) {
+		if (m.role === "toolResult") {
+			// Orphan result — its call was dropped. Drop the result too.
+			if (!presentCallIds.has(m.toolCallId)) continue;
+			repaired.push(m);
+			continue;
+		}
+		if (m.role === "assistant") {
+			// Drop toolCall blocks whose result was cut (dangling call). Text and
+			// thinking blocks survive — only the orphan call goes.
+			const kept = m.content.filter(
+				(b) => !(b.type === "toolCall" && typeof b.id === "string" && !resolvedCallIds.has(b.id)),
+			);
+			if (kept.length === 0) continue; // assistant now empty — drop the message
+			repaired.push(kept.length === m.content.length ? m : { ...m, content: kept });
+			continue;
+		}
+		repaired.push(m);
+	}
+	return repaired;
+}
+
 export function fitToWindow(messages: Message[], budget: ContextBudget, maxInputTokens: number): FitResult {
 	if (messages.length === 0) {
 		return { messages: [], omittedCount: 0, estimatedTokens: 0, maxInputTokens, ledger: [] };
@@ -289,9 +345,13 @@ export function fitToWindow(messages: Message[], budget: ContextBudget, maxInput
 		const tail = messages.slice(-keepLast);
 		const omittedCount = messages.length - keepFirst - keepLast;
 		const marker = omittedMarker(omittedCount);
-		const candidate = [...head, marker, ...tail];
+		// Repair tool_use/tool_result pairing across the head+tail boundary —
+		// truncation can orphan a result whose call was dropped (or dangle a call
+		// whose result was dropped), which Anthropic rejects. See repairToolPairing.
+		const repaired = repairToolPairing([...head, ...tail]);
+		const candidate = [...repaired.slice(0, head.length), marker, ...repaired.slice(head.length)];
 		if (sumTokens(candidate) <= maxInputTokens) {
-			return { messages: candidate, omittedCount, estimatedTokens: sumTokens(candidate), maxInputTokens, ledger: [] };
+			return { messages: candidate, omittedCount: omittedCount + (head.length + tail.length - repaired.length), estimatedTokens: sumTokens(candidate), maxInputTokens, ledger: [] };
 		}
 		keepLast--;
 	}
@@ -302,7 +362,10 @@ export function fitToWindow(messages: Message[], budget: ContextBudget, maxInput
 	const omittedCount = messages.length - 1;
 	const marker = omittedMarker(omittedCount);
 	const survivor = clampSurvivor(only, maxInputTokens - sumTokens([marker]));
-	const candidate = [marker, survivor];
+	// A lone surviving toolResult would be an orphan (no call in-window) — repair
+	// drops it; if that leaves nothing, send the marker alone rather than crash.
+	const repairedLast = repairToolPairing([survivor]);
+	const candidate = repairedLast.length > 0 ? [marker, ...repairedLast] : [marker];
 	return { messages: candidate, omittedCount, estimatedTokens: sumTokens(candidate), maxInputTokens, ledger: [] };
 }
 
