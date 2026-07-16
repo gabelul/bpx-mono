@@ -472,7 +472,8 @@ export function buildConsultContext(input: BuildContextInput): FitResult {
 
 	// Empty transcript: nothing to fit but the directive. Assemble + final-check it.
 	if (stripped.length === 0) {
-		return assembleAndReduce([], [], directive, maxInputTokens, input.budget);
+		const empty = assembleAndReduce([], [], directive, maxInputTokens, input.budget);
+		return { ...empty, messages: repairToolPairing(empty.messages) };
 	}
 
 	// 2. Classify. Deterministic tags drive priority — no model judgment (§E.0).
@@ -486,7 +487,15 @@ export function buildConsultContext(input: BuildContextInput): FitResult {
 	// 4. Assemble the EXACT final payload (kept re-sorted chronological + markers +
 	//    directive) and run RULE A: re-check on the assembled string, reduce until
 	//    it genuinely fits. RULE B / fail-closed live inside assembleAndReduce.
-	return assembleAndReduce(plan.selected, plan.ledger, directive, maxInputTokens, input.budget);
+	const assembled = assembleAndReduce(plan.selected, plan.ledger, directive, maxInputTokens, input.budget);
+	// 5. Repair tool_use/tool_result pairing unconditionally. The priority-fill /
+	//    assemble steps can drop a message from one half of a pair (a toolCall's
+	//    assistant turn, or a toolResult) without dropping the other — leaving an
+	//    orphan that strict providers (Anthropic) reject with a 400. This is the
+	//    §P failure the extension exists to prevent; truncation reopens it, so we
+	//    close it at the boundary, on every build, regardless of which path ran.
+	//    Idempotent and marker/directive-safe (it only touches tool blocks/results).
+	return { ...assembled, messages: repairToolPairing(assembled.messages) };
 }
 
 // ---------------------------------------------------------------------------

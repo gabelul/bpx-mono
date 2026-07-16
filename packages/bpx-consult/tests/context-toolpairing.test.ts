@@ -13,6 +13,7 @@ import type { Message } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
 	assistantText,
+	buildConsultContext,
 	fitToWindow,
 	repairToolPairing,
 	userText,
@@ -98,6 +99,34 @@ describe("repairToolPairing", () => {
 		const msgs = [userText("a"), assistantWithCall("call-1"), toolResultFor("call-1"), toolResultFor("orphan")];
 		const once = repairToolPairing(msgs);
 		expect(repairToolPairing(once)).toEqual(once);
+	});
+});
+
+describe("buildConsultContext — unconditional repair (the 0.6.1 gap)", () => {
+	it("repairs orphan tool pairs even when the session fits without truncation", () => {
+		// The live bug: opus has a 200k window, the session fit without truncation,
+		// so the OLD repair (only inside fitToWindow's truncation path) never ran.
+		// buildConsultContext must repair unconditionally at its output boundary.
+		// Here the input itself carries an orphan result (call absent) and the
+		// window is huge so no truncation happens — repair must still fire.
+		const orphanSession: Message[] = [
+			userText("task"),
+			toolResultFor("call-that-does-not-exist"), // orphan — no preceding toolCall
+			userText("recent evidence"),
+		];
+		const fit = buildConsultContext({
+			sessionMessages: orphanSession,
+			advisorContextWindow: 200_000, // huge → no truncation → old repair skipped
+			budget: BUDGET,
+		});
+		// No orphan toolResult survives to the advisor.
+		for (const m of fit.messages) {
+			if (m.role === "toolResult") {
+				const calls = new Set<string>();
+				for (const mm of fit.messages) if (mm.role === "assistant") for (const b of mm.content) if (b.type === "toolCall") calls.add(b.id);
+				expect(calls.has(m.toolCallId)).toBe(true);
+			}
+		}
 	});
 });
 
