@@ -5,6 +5,13 @@ All notable changes to @booplex/bpx-consult are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0](https://github.com/gabelul/bpx-mono/compare/v0.7.0...v0.8.0) (2026-07-16)
+
+
+### Features
+
+* test-probe works for inline models too — catch a 401 before assigning a seat ([763ab68](https://github.com/gabelul/bpx-mono/commit/763ab68b1a5e0def3231e88f1020d253c9cb1d27))
+
 ## [0.7.0](https://github.com/gabelul/bpx-mono/compare/v0.6.2...v0.7.0) (2026-07-16)
 
 
