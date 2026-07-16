@@ -96,7 +96,7 @@ The **Council members** submenu (one entry on the main `/consult` menu) manages 
 - **Add AI-generated** — describe the advisor's focus, pick a model to draft it, confirm the `{name, stance, system prompt}` it returns, and seat it
 - **Synthesizer model** — the model that merges member verdicts into one call
 
-The default roster seats architect/critic/simplifier on distinct model tiers so parallel calls don't all hammer one provider. CLI routing is persona-scoped — two seats on the same model can route differently (one inline, one CLI). Custom CLI commands (arbitrary command + args) and context-budget char caps still live in the config file.
+The default roster seats architect/critic/simplifier on distinct model tiers so parallel calls don't all hammer one provider. CLI routing is persona-scoped — two seats on the same model can route differently (one inline, one CLI). Advanced settings (context-budget char caps, per-backend timeouts) still live in the config file.
 
 ---
 
@@ -193,7 +193,7 @@ Advice comes back differently depending on who asked for it. `feedbackMode` (def
 
 ## Backends
 
-Solo **and** council members can route to an external CLI instead of pi's inline provider. The `/consult` menu's Council members submenu sets this per persona: inline, or codex / claude / opencode CLI (with a Test-backend probe). For custom commands + args, set `backends.<model>.type: "cli"` in the config. Each reads the fitted context from stdin. The subprocess is non-blocking, so it doesn't serialize under the hood — and a council can mix inline and CLI seats in parallel, so one provider dying (rate limit, dead key) no longer collapses the whole council.
+Solo **and** council members can route to an external CLI instead of pi's inline provider. The `/consult` menu's Council members submenu sets this per persona: inline, a preset (codex / claude / opencode), or a **Custom CLI** (any executable — command + structured args + a required context window, probe-tested before it's saved). The legacy `backends.<model>` config map still works as a fallback. Each CLI reads the fitted context from stdin. The subprocess is non-blocking, so it doesn't serialize under the hood — and a council can mix inline and CLI seats in parallel, so one provider dying (rate limit, dead key) no longer collapses the whole council.
 
 ---
 
@@ -256,8 +256,6 @@ Where this is heading. The package is pre-1.0, so these are milestone groupings,
 **Before 1.0**
 
 - **Smarter retry.** Resilience today is per-member isolation plus wall-clock timeouts. Per-member circuit-breaker with exponential backoff is the next layer for flaky providers.
-
-*Mixed inline+CLI council shipped (0.6.0) — council members can now be CLI or inline, so one provider dying no longer collapses the council.*
 
 **After 1.0**
 
