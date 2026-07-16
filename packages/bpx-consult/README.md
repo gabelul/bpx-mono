@@ -89,7 +89,7 @@ Type **`/consult`** to configure everything interactively — no file editing. I
 The **Council members** submenu manages who's on the council:
 
 - **Assign a model** to any seated member (fuzzy-filter your authed models)
-- **Route a seat to a CLI backend** — per persona: inline, or codex / claude / opencode CLI. Each CLI seat runs as a subprocess in parallel with the inline seats, so one provider dying doesn't collapse the council. A **Test backend** probe checks the CLI works (missing executable, timeout, nonzero exit, empty output) before you rely on it.
+- **Route a seat to a CLI backend** — per persona: inline, or codex / claude / opencode CLI. Each CLI seat runs as a subprocess in parallel with the inline seats, so one provider dying doesn't collapse the council. A **Test this model + persona** probe runs the counselor's actual prompt against the chosen model (inline or CLI) and reports whether it responds — catching a dead key, a 401, a hang, or a missing executable *before* you commit the seat.
 - **Enable / disable** a persona — unseating keeps its definition, so re-enabling restores its model
 - **Add manually** — type a name, pick a stance (for/against/neutral), pick a model
 - **Add AI-generated** — describe the advisor's focus, pick a model to draft it, confirm the `{name, stance, system prompt}` it returns, and seat it

@@ -28,6 +28,8 @@ import type { BpxConsultConfig } from "./config.js";
 import { loadConfig, resolvePersonaBackend, saveConfig, type LoadConfigOptions } from "./config.js";
 import { callAdvisor, resolveAdvisor } from "./advisor.js";
 import { callCliAdvisor, cliContextWindow, type CliBackendConfig } from "./cli-backend.js";
+import { withTimeout } from "./timeout.js";
+import { personaSystemPrompt, resolvePersona } from "./personas.js";
 import { buildGeneratePrompt, GEN_SYSTEM_PROMPT, parsePersonaJson } from "./persona-gen.js";
 import { showFilterablePicker } from "./picker.js";
 
@@ -666,7 +668,7 @@ async function runMemberDetail(
 			items: [
 				{ value: "model", label: "Set model…" },
 				{ value: "backend", label: `Set backend… (${route})` },
-				{ value: "test", label: route === "inline" ? "Test backend  (inline — nothing to test)" : "Test backend (run a probe)…" },
+				{ value: "test", label: "Test this model + persona (probe)…" },
 				{ value: MENU_BACK, label: "Back" },
 			],
 		});
@@ -706,41 +708,83 @@ async function runMemberDetail(
 		}
 
 		if (choice === "test") {
-			const b = resolvePersonaBackend(config, persona());
-			if (b?.type !== "cli") continue;
-			await testBackend(ctx, b);
+			await testMemberRoute(ctx, config, name);
 			continue;
 		}
 	}
 }
 
 /**
- * Probe a CLI backend with a one-word prompt and surface a clear result category
- * (council §4): missing executable, timeout, nonzero exit, malformed output, or
- * success. Reuses callCliAdvisor with a short timeout so a dead CLI fails fast.
+ * Probe a member's effective route (inline model OR CLI backend) by running the
+ * counselor's ACTUAL persona prompt with a one-word reply ask, then surfacing a
+ * clear result category. For inline this is the test that catches a 401 / dead
+ * key / unresponsive model BEFORE you commit the seat — the thing the live
+ * councils kept hitting. For CLI it catches missing-executable / timeout /
+ * nonzero-exit / empty-output. Short timeout so a dead route fails fast.
  */
-async function testBackend(ctx: ExtensionContext, backend: CliBackendConfig): Promise<void> {
-	ctx.ui.notify(`Probing ${backend.command}…`, "info");
-	const result = await callCliAdvisor({
-		systemPrompt: "Reply with the single word OK and nothing else.",
-		messages: [{ role: "user", content: "ping", timestamp: Date.now() }],
-		backend: { ...backend, timeoutMs: Math.min(backend.timeoutMs ?? 30_000, 30_000) },
-		signal: undefined,
-		cwd: ctx.cwd,
-	});
-	if (result.text.trim()) {
-		ctx.ui.notify(`✓ ${backend.command} responded: "${result.text.trim().slice(0, 60)}"`, "info");
+async function testMemberRoute(ctx: ExtensionContext, config: BpxConsultConfig, name: string): Promise<void> {
+	const persona = resolvePersona(name, config.personas as never);
+	if (!persona) {
+		ctx.ui.notify(`No persona "${name}" to test.`, "error");
 		return;
 	}
-	if (result.errorMessage?.match(/failed to run|ENOENT/i)) {
-		ctx.ui.notify(`✗ ${backend.command} not found on PATH. Install it or fix the command.`, "error");
-	} else if (result.timedOut) {
-		ctx.ui.notify(`✗ ${backend.command} timed out (30s). Hung or misconfigured.`, "error");
-	} else if (result.exitCode !== null && result.exitCode !== 0) {
-		ctx.ui.notify(`✗ ${backend.command} exited ${result.exitCode}: ${result.errorMessage?.slice(0, 120)}`, "error");
-	} else {
-		ctx.ui.notify(`✗ ${backend.command} returned no usable output: ${result.errorMessage?.slice(0, 120) ?? "empty"}`, "error");
+	const systemPrompt = personaSystemPrompt(persona);
+	const probe = { role: "user" as const, content: "Reply with the single word OK and nothing else.", timestamp: Date.now() };
+	const rawPersona = config.personas?.[name] ?? {};
+	const modelKey = persona.defaultModel ?? config.modes?.solo?.model;
+	const backend = resolvePersonaBackend(config, { backend: rawPersona.backend, defaultModel: modelKey });
+	const timeoutMs = 30_000;
+
+	// CLI route
+	if (backend?.type === "cli") {
+		ctx.ui.notify(`Probing ${name} → cli:${backend.command} (with the ${persona.stance} ${name} prompt)…`, "info");
+		const r = await callCliAdvisor({
+			systemPrompt,
+			messages: [probe],
+			backend: { ...backend, timeoutMs: Math.min(backend.timeoutMs ?? timeoutMs, timeoutMs) },
+			signal: undefined,
+			cwd: ctx.cwd,
+		});
+		if (r.text.trim()) {
+			ctx.ui.notify(`✓ ${name} (cli:${backend.command}) responded: "${r.text.trim().slice(0, 60)}"`, "info");
+		} else if (r.errorMessage?.match(/failed to run|ENOENT/i)) {
+			ctx.ui.notify(`✗ ${name}: cli:${backend.command} not found on PATH.`, "error");
+		} else if (r.timedOut) {
+			ctx.ui.notify(`✗ ${name}: cli:${backend.command} timed out (30s).`, "error");
+		} else if (r.exitCode !== null && r.exitCode !== 0) {
+			ctx.ui.notify(`✗ ${name}: cli:${backend.command} exited ${r.exitCode}: ${r.errorMessage?.slice(0, 120)}`, "error");
+		} else {
+			ctx.ui.notify(`✗ ${name}: cli:${backend.command} returned no usable output.`, "error");
+		}
+		return;
 	}
+
+	// Inline route
+	const advisor = resolveAdvisor(ctx, modelKey);
+	if (!advisor) {
+		ctx.ui.notify(`✗ ${name}: model "${modelKey ?? "(none)"}" isn't in the registry. Pick a model first.`, "error");
+		return;
+	}
+	ctx.ui.notify(`Probing ${name} → ${advisor.label} (with the ${persona.stance} ${name} prompt)…`, "info");
+	const outcome = await withTimeout(timeoutMs, undefined, (signal) =>
+		callAdvisor({ ctx, advisor, systemPrompt, messages: [probe], thinkingLevel: persona.thinkingLevel, signal }),
+	);
+	if (outcome.timedOut) {
+		ctx.ui.notify(`✗ ${name}: ${advisor.label} timed out (30s) — hung or unreachable.`, "error");
+		return;
+	}
+	if (!outcome.ok) {
+		const msg = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+		ctx.ui.notify(`✗ ${name}: ${advisor.label} threw: ${msg.slice(0, 140)}`, "error");
+		return;
+	}
+	const result = outcome.value;
+	if (result.stopReason === "error" || !result.text) {
+		// This is the 401 / dead-key / no-auth path — the thing the live councils hit.
+		ctx.ui.notify(`✗ ${name}: ${advisor.label} failed (${result.stopReason}): ${result.errorMessage?.slice(0, 140) ?? "no response"}. Auth likely invalid — re-run /login for that provider.`, "error");
+		return;
+	}
+	ctx.ui.notify(`✓ ${name}: ${advisor.label} responded: "${result.text.trim().slice(0, 60)}"`, "info");
 }
 
 /** Persist config, notify on failure. Returns false to signal the caller should abort. */
