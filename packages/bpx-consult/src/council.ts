@@ -14,9 +14,10 @@ import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from 
 import type { Message, ThinkingLevel } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
+import { callCliAdvisor, type CliBackendConfig } from "./cli-backend.js";
 import { withTimeout } from "./timeout.js";
 import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSummary } from "./context-engine.js";
-import type { BpxConsultConfig } from "./config.js";
+import { resolveBackend, type BpxConsultConfig } from "./config.js";
 import {
 	computeConfidence,
 	detectDisagreement,
@@ -60,6 +61,26 @@ export interface ExecuteCouncilInput {
 	question?: string;
 }
 
+/**
+ * A resolved council member — inline (registry model, callAdvisor) or CLI
+ * (external subprocess, callCliAdvisor). The fan-out dispatches on `kind` so a
+ * council can mix inline + CLI members in parallel: one provider dying (rate
+ * limit, dead key) no longer collapses the whole council when a CLI seat can
+ * carry a stance instead.
+ */
+type ResolvedMember =
+	| { persona: Persona; kind: "inline"; advisor: ResolvedAdvisor; contextWindow: number; modelLabel: string }
+	| { persona: Persona; kind: "cli"; backend: CliBackendConfig; contextWindow: number; modelLabel: string };
+
+/**
+ * Fallback context window for a CLI member whose modelKey isn't in the registry
+ * (a CLI binary isn't registered, so its window can't be looked up). Conservative
+ * 32k — same default the context engine uses for an unknown advisor window.
+ * Keying a CLI backend to a registered small model lets the fit use that model's
+ * real (smaller) window instead; this is the safe floor.
+ */
+const CLI_FALLBACK_WINDOW = 32_000;
+
 export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentToolResult<CouncilDetails>> {
 	const { ctx, config, signal, onUpdate, question } = input;
 
@@ -102,31 +123,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	// exceptions. Resolving here (instead of inside the fan-out) also lets us
 	// bail early with a clear error if a persona's model is missing.
 	const sessionId = ctx.sessionManager.getSessionId();
-	const memberAdvisors: Array<{ persona: Persona; advisor: ResolvedAdvisor }> = [];
-	// Members whose model failed to resolve are pre-failed here rather than
-	// aborting the whole council. One bad model (typo, deprovisioned, wrong
-	// provider) must not kill the other members — that's the isolation the
-	// per-member design is for. The pre-failed entries flow into the final
-	// results alongside the settled ones, so they count against success_ratio
-	// in the confidence score (honest about the partial failure).
-	const preFailed: MemberResult[] = [];
-	for (const persona of personas) {
-		const modelKey = persona.defaultModel ?? config.modes?.solo?.model;
-		const advisor = resolveAdvisor(ctx, modelKey);
-		if (!advisor) {
-			preFailed.push({
-				persona: persona.name,
-				stance: persona.stance,
-				model: modelKey ?? "(none)",
-				status: "error",
-				text: "",
-				errorMessage: `Could not resolve model "${modelKey ?? "(none)"}" for persona ${persona.name}.`,
-				alignment: 0,
-			});
-			continue;
-		}
-		memberAdvisors.push({ persona, advisor });
-	}
+	const { resolved: memberAdvisors, preFailed } = resolveCouncilMembers(personas, config, (key) => resolveAdvisor(ctx, key));
 
 	// If EVERY member failed to resolve, bail — there's no council to run.
 	if (memberAdvisors.length === 0) {
@@ -149,7 +146,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 
 	const minWindow = Math.min(
 		synth.model.contextWindow,
-		...memberAdvisors.map((m) => m.advisor.model.contextWindow),
+		...memberAdvisors.map((m) => m.contextWindow),
 	);
 
 	const fit = buildConsultContext({
@@ -167,7 +164,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	if (fit.error) {
 		return err(`Couldn't fit the council window: ${fit.error}`, {
 			mode: "council",
-			members: memberAdvisors.map((m) => ({ persona: m.persona.name, model: m.advisor.label, status: "error" })),
+			members: memberAdvisors.map((m) => ({ persona: m.persona.name, model: m.modelLabel, status: "error" })),
 			synthesizer: synth.label,
 			confidence: 0,
 			fittedTokens: fit.estimatedTokens,
@@ -205,7 +202,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	// were already running concurrently). Thunks defer execution.
 	const memberTimeoutMs = councilConfig?.timeoutMs ?? 120000;
 	const memberThunks: Array<() => Promise<MemberResult>> = memberAdvisors.map(
-		({ persona, advisor }) => () => runMember(ctx, persona, advisor, fit.messages, contextBudget, signal, sessionId, memberTimeoutMs),
+		(member) => () => runMember(ctx, member, fit.messages, contextBudget, signal, sessionId, memberTimeoutMs),
 	);
 
 	// Promise.allSettled semantics: one flaky member never crashes the council.
@@ -340,25 +337,93 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
  * mechanism. See SPEC §M for the v1.1 plan.)
  */
 
+/**
+ * Resolve each council persona to an inline or CLI member.
+ *
+ * Pure (no ctx) so the CLI-vs-inline decision + window fallback is unit-
+ * testable without a live model registry. `resolveAdvisor` is injected so a
+ * test can stub the registry. Members whose inline model can't resolve are
+ * pre-failed (one bad model must not kill the council); CLI members never
+ * pre-fail on resolution — a CLI binary isn't in the registry by design.
+ */
+export function resolveCouncilMembers(
+	personas: Persona[],
+	config: BpxConsultConfig,
+	resolveAdvisor: (key: string | undefined) => ResolvedAdvisor | undefined,
+): { resolved: ResolvedMember[]; preFailed: MemberResult[] } {
+	const resolved: ResolvedMember[] = [];
+	const preFailed: MemberResult[] = [];
+	for (const persona of personas) {
+		const modelKey = persona.defaultModel ?? config.modes?.solo?.model;
+		// CLI backend configured? Route through callCliAdvisor — the model need
+		// not be in the registry. Window falls back to 32k if the key isn't
+		// registered (SPEC §O); keying it to a registered small model uses that
+		// model's real window instead.
+		const backend = resolveBackend(config, modelKey);
+		if (backend?.type === "cli") {
+			const registryWindow = resolveAdvisor(modelKey)?.model.contextWindow;
+			resolved.push({ persona, kind: "cli", backend, contextWindow: registryWindow ?? CLI_FALLBACK_WINDOW, modelLabel: modelKey ?? "(none)" });
+			continue;
+		}
+		const advisor = resolveAdvisor(modelKey);
+		if (!advisor) {
+			preFailed.push({
+				persona: persona.name,
+				stance: persona.stance,
+				model: modelKey ?? "(none)",
+				status: "error",
+				text: "",
+				errorMessage: `Could not resolve model "${modelKey ?? "(none)"}" for persona ${persona.name}.`,
+				alignment: 0,
+			});
+			continue;
+		}
+		resolved.push({ persona, kind: "inline", advisor, contextWindow: advisor.model.contextWindow, modelLabel: advisor.label });
+	}
+	return { resolved, preFailed };
+}
+
 async function runMember(
 	ctx: ExtensionContext,
-	persona: Persona,
-	advisor: ResolvedAdvisor,
+	member: ResolvedMember,
 	messages: Message[],
 	contextBudget: ContextBudget,
 	parentSignal: AbortSignal | undefined,
 	sessionId: string | undefined,
 	memberTimeoutMs: number,
 ): Promise<MemberResult> {
+	const { persona, modelLabel } = member;
+	const systemPrompt = personaSystemPrompt(persona);
 	const thinkingLevel: ThinkingLevel | undefined = persona.thinkingLevel;
 	// Per-member wall-clock budget (council.timeoutMs). Insurance against a
 	// provider that accepts-then-hangs — without this, allSettled never resolves
 	// and the executor turn hangs. Consistent with debate's wall-clock fix.
 	const outcome = await withTimeout(memberTimeoutMs, parentSignal, async (signal) => {
+		// CLI member: pipe the fitted context to the external subprocess. The CLI
+		// path is async/non-blocking by design (cli-backend.ts), so it runs truly
+	// parallel to any inline completeSimple sibling — that's what makes a mixed
+		// inline+CLI council survive one provider dying.
+		if (member.kind === "cli") {
+			const cliResult = await callCliAdvisor({
+				systemPrompt,
+				messages,
+				backend: member.backend,
+				signal,
+				cwd: ctx.cwd,
+			});
+			// Normalize CliCallResult → ConsultCallResult shape so the status logic
+			// below is identical for inline and CLI members.
+			return {
+				text: cliResult.text,
+				usage: undefined,
+				stopReason: cliResult.errorMessage ? "error" : "stop",
+				errorMessage: cliResult.errorMessage,
+			};
+		}
 		return callAdvisor({
 			ctx,
-			advisor,
-			systemPrompt: personaSystemPrompt(persona),
+			advisor: member.advisor,
+			systemPrompt,
 			messages,
 			thinkingLevel,
 			signal,
@@ -369,11 +434,11 @@ async function runMember(
 
 	// Timeout or throw → failed member (isolation holds; siblings unaffected).
 	if (outcome.timedOut) {
-		return memberErr(persona, advisor, `timed out after ${memberTimeoutMs}ms`);
+		return memberErr(persona, modelLabel, `timed out after ${memberTimeoutMs}ms`);
 	}
 	if (!outcome.ok) {
 		const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
-		return memberErr(persona, advisor, message);
+		return memberErr(persona, modelLabel, message);
 	}
 
 	const result = outcome.value;
@@ -382,7 +447,7 @@ async function runMember(
 	return {
 		persona: persona.name,
 		stance: persona.stance,
-		model: advisor.label,
+		model: modelLabel,
 		status,
 		text: result.text,
 		errorMessage: status === "error" ? result.errorMessage ?? result.stopReason : undefined,
@@ -392,11 +457,11 @@ async function runMember(
 }
 
 /** Build a failed-member result — shared by the timeout and throw paths. */
-function memberErr(persona: Persona, advisor: ResolvedAdvisor, message: string): MemberResult {
+function memberErr(persona: Persona, modelLabel: string, message: string): MemberResult {
 	return {
 		persona: persona.name,
 		stance: persona.stance,
-		model: advisor.label,
+		model: modelLabel,
 		status: "error",
 		text: "",
 		errorMessage: message,
@@ -433,10 +498,12 @@ function err(text: string, details: CouncilDetails): AgentToolResult<CouncilDeta
  * kill members — seen in live testing. The warning names the colliding
  * provider and the members so the user can fix the roster.
  */
-function warnOnProviderCollision(ctx: ExtensionContext, members: Array<{ persona: Persona; advisor: ResolvedAdvisor }>): void {
+function warnOnProviderCollision(ctx: ExtensionContext, members: ResolvedMember[]): void {
 	const byProvider = new Map<string, string[]>();
 	for (const m of members) {
-		const p = m.advisor.model.provider;
+		// Inline member → its model's provider. CLI member → the CLI command (two
+		// codex seats still share OpenAI's rate limit under the hood).
+		const p = m.kind === "inline" ? m.advisor.model.provider : `cli:${m.backend.command}`;
 		byProvider.set(p, [...(byProvider.get(p) ?? []), m.persona.name]);
 	}
 	const collisions = [...byProvider.entries()].filter(([, names]) => names.length > 1);

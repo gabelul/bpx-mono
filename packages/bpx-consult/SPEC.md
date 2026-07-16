@@ -171,7 +171,7 @@ Each persona/advisor can target one of:
 - **cli** — pipe curated context (as markdown) via stdin to an external CLI: `codex`, `claude`, or `opencode`. Parse JSONL (codex/opencode) or plain text (claude) output. **Run via async `spawn`, never `execSync`** — `execSync` blocks the event loop, and the whole point of the async path is that a CLI advisor can't freeze the executor or serialize a council. (Implementation note: v1 uses Node `spawn` directly rather than `pi.exec`, because pi 0.80.x's `ExecOptions` exposes no stdin and all three CLIs read the prompt from stdin. `spawn` is the correct non-blocking primitive here; if pi adds stdin to `ExecOptions`, switching is a one-liner. Do **not** "simplify" this back to `pi.exec` — it silently breaks every CLI backend.) Timeout kills the child and returns a clean "[timed out after Ns]" result.
   - **Window fit for CLI.** A CLI binary isn't in the model registry, so its context window can't be looked up. The context engine fits to the modelKey's registry window if the backend is keyed to a known model, else falls back to a conservative 32k (`context-engine.ts`). Key a CLI backend to a small model or leave it unregistered; keying it to a large-window model can under-fit the CLI's real (smaller) window — a v1.1 sharp edge.
 
-Mapped per-persona under `backends`. **v1 scope: CLI is solo-only** — council members are inline-only (mixing inline + CLI members in one council is deferred; see §O). The async `spawn` foundation is what makes that mix *possible* later without a rewrite, but it isn't wired into council yet.
+Mapped per-persona under `backends`. Council members can be inline or CLI — a persona whose model has a CLI backend routes through the subprocess instead of `completeSimple`, so a council can mix inline + CLI seats in parallel (one provider dying no longer collapses the council). A CLI member's window falls back to a conservative 32k when its modelKey isn't in the registry (a CLI binary isn't registered); keying it to a registered small model lets the fit use that model's real window.
 
 ## §T — Triggers
 
@@ -264,7 +264,7 @@ Precedence: env > project (`.pi/`, only if trusted) > global (`~/.pi/agent/`) > 
 
 ## §O — Out of scope for v1
 
-- **Mixed inline + CLI council** — v1 wires CLI backends into **solo only**; council members are inline-only. Routing CLI per council member needs per-member backend resolution + the min-window fit to handle "a CLI backend has no registry `contextWindow`". Deferred to **v1.1**. The async `spawn` foundation already makes this a wiring job, not a rewrite. (This supersedes the earlier §B phrasing "a council can mix inline and cli freely" — that's the v1.1 target, not v1 behavior.)
+- **Mixed inline + CLI council** — **shipped.** Council members resolve per-member backends: a persona whose model has a CLI backend routes through `callCliAdvisor` (async `spawn`), inline otherwise. The min-window fit handles a CLI member's missing registry `contextWindow` via a 32k fallback. The async `spawn` foundation is what made this a wiring job rather than a rewrite.
 - Native research-backed council — building consensus capabilities in, not delegating out. What council v1 doesn't do yet: research-enhanced stances (advisors web-search for evidence behind their stance), focus-area steering (`focus_areas` — security/performance/cost weighting per advisor), and context beyond the session transcript (files/images). v2 builds these natively.
 - Memory compression (caveman-style) for very long sessions. v2.
 - Branched session handoff — `pi-mimir`'s `SessionManager.createBranchedSession(leafId)` forks a snapshot `.jsonl` and runs a child `pi` subprocess (`--session`, `--model`, `--system-prompt`, `--tools`). Powerful for dedicated per-persona advisor sessions, but v2.
@@ -295,7 +295,7 @@ bpx-consult is mostly assembly. Before writing anything new, check here.
 
 - The advisor call **always** fits the target model's context window. No exceptions. `maxContextTokens` is derived from the advisor model's window (`ctx.modelRegistry`) minus `responseReserveTokens`, never a global constant.
 - The in-flight `consult()` call is always stripped before forwarding context.
-- CLI backends run via async Node `spawn` (never `execSync`), so a CLI advisor never blocks the executor's event loop. (v1 wires CLI into solo only; the async foundation is what lets council mix backends in v1.1 — see §O.)
+- CLI backends run via async Node `spawn` (never `execSync`), so a CLI advisor never blocks the executor's event loop. Council members can be CLI or inline; the async foundation is what lets them mix in parallel (see §O).
 - Triggers never fire in untrusted projects.
 - Triggers never fire twice in the same round (`autoReviewedThisRound`), and reset on user input.
 - The loop-detection fingerprint is never truncated.

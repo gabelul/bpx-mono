@@ -191,9 +191,7 @@ Advice comes back differently depending on who asked for it. `feedbackMode` (def
 
 ## Backends
 
-Solo can route to an external CLI instead of pi's inline provider. Set `backends.<model>.type: "cli"` in the config. Supported CLIs: `codex`, `claude`, `opencode`. Each reads the fitted context from stdin. The subprocess is non-blocking, so it doesn't serialize under the hood.
-
-In v1, the CLI backend is solo-only. Council members don't route to CLI yet. That's a [v1.1 goal](#roadmap).
+Solo **and** council members can route to an external CLI instead of pi's inline provider. Set `backends.<model>.type: "cli"` in the config. Supported CLIs: `codex`, `claude`, `opencode`. Each reads the fitted context from stdin. The subprocess is non-blocking, so it doesn't serialize under the hood — and a council can mix inline and CLI seats in parallel, so one provider dying (rate limit, dead key) no longer collapses the whole council.
 
 ---
 
@@ -255,8 +253,9 @@ Where this is heading. The package is pre-1.0, so these are milestone groupings,
 
 **Before 1.0**
 
-- **Mixed inline+CLI council.** The async-subprocess plumbing is already in place so a council can seat one `completeSimple` member and one CLI member running in parallel. Wiring the CLI backend into council members (not just solo) is the headline next step — it lets a council survive one provider dying.
 - **Smarter retry.** Resilience today is per-member isolation plus wall-clock timeouts. Per-member circuit-breaker with exponential backoff is the next layer for flaky providers.
+
+*Mixed inline+CLI council shipped (0.6.0) — council members can now be CLI or inline, so one provider dying no longer collapses the council.*
 
 **After 1.0**
 
