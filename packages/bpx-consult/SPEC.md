@@ -264,7 +264,7 @@ Precedence: env > project (`.pi/`, only if trusted) > global (`~/.pi/agent/`) > 
 
 ## §O — Out of scope for v1
 
-- **Mixed inline + CLI council** — **shipped.** Council members resolve per-member backends: a persona whose model has a CLI backend routes through `callCliAdvisor` (async `spawn`), inline otherwise. The min-window fit handles a CLI member's missing registry `contextWindow` via a 32k fallback. The async `spawn` foundation is what made this a wiring job rather than a rewrite.
+- **Mixed inline + CLI council** — **shipped.** Council members resolve per-member backends (persona-scoped): a persona whose model has a CLI backend routes through `callCliAdvisor` (async `spawn`), inline otherwise. A CLI member's context window comes from a preset (codex/claude/opencode) or a declared `contextWindow` on the backend — an unknown custom command with no declared window pre-fails rather than guessing. The async `spawn` foundation is what made this a wiring job rather than a rewrite.
 - Native research-backed council — building consensus capabilities in, not delegating out. What council v1 doesn't do yet: research-enhanced stances (advisors web-search for evidence behind their stance), focus-area steering (`focus_areas` — security/performance/cost weighting per advisor), and context beyond the session transcript (files/images). v2 builds these natively.
 - Memory compression (caveman-style) for very long sessions. v2.
 - Branched session handoff — `pi-mimir`'s `SessionManager.createBranchedSession(leafId)` forks a snapshot `.jsonl` and runs a child `pi` subprocess (`--session`, `--model`, `--system-prompt`, `--tools`). Powerful for dedicated per-persona advisor sessions, but v2.

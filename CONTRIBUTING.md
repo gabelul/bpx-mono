@@ -38,6 +38,16 @@ You don't cut releases by hand, and neither do I — [release-please](https://gi
 
 Which is exactly why the commit titles matter: `feat:` bumps a minor, `fix:` bumps a patch, and "updated stuff" bumps nothing and helps no one.
 
+### Keeping docs honest (the part that bites)
+
+The package README and SPEC drift most often not from *forgetting* to update them, but from updating the **feature bullet** and missing a sibling section that repeats the old claim (this has shipped contradictions more than once). Before you declare a capability change done:
+
+1. **Grep every `.md` for the OLD claim, not just the section you edited.** If you changed something from "config-file-only" to "menu-reachable," search the whole repo for "config-file-only" — there's likely a second mention.
+2. **`cd packages/bpx-consult && pnpm test` must stay green.** `tests/docs-stale.test.ts` fails CI if any README/SPEC still contains a known-stale phrase (`config-file-only`, `solo only`, `32k fallback`, dead `whats-not-in-v1` anchors, etc.). Add new phrases to that test's list as capabilities change — it's a living list, not a fixed one.
+3. **The root `README.md` stays evergreen on purpose** — high-level only, no feature specifics, no version-pegged claims. Don't add feature detail there; it belongs in the package README. Evergreen is what keeps the root from drifting release-to-release.
+
+The discipline goal is mechanical, not memory-based: a checklist I can ignore, a failing CI test I can't.
+
 ## Questions
 
 Open an issue, or find me at [Booplex.com](https://booplex.com).
