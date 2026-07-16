@@ -33,6 +33,7 @@ const {
 	buildCouncilMenu,
 	buildBackendItems,
 	describePersonaBackend,
+	probeInlineModel,
 } = await import("../src/consult-ui.js");
 
 /** Minimal Model stub — modelKey reads {provider, id}; pickers read .name/.provider. */
@@ -137,56 +138,30 @@ describe("buildMainMenu", () => {
 		expect(items.some((i) => i.label.startsWith("Solo model:"))).toBe(true);
 	});
 
-	it("adds one row per SEATED member (roster-driven), including user-defined ones", () => {
-		// Rows come from council.members, not the personas map — so seating a
-		// user-defined persona means adding it to the roster too.
-		const config = {
-			...DEFAULT_CONFIG,
-			modes: {
-				...DEFAULT_CONFIG.modes,
-				council: { ...DEFAULT_CONFIG.modes!.council!, members: ["architect", "security"] },
-			},
-			personas: {
-				architect: { defaultModel: "anthropic/claude-opus-4-6" },
-				security: { defaultModel: "anthropic/claude-sonnet-4-6" }, // user-defined seat
-			},
-		};
-		const items = buildMainMenu(config);
-		expect(items.some((i) => i.value === "persona.architect")).toBe(true);
-		expect(items.some((i) => i.value === "persona.security")).toBe(true);
-		expect(items.filter((i) => i.value.startsWith("persona.")).length).toBe(2);
-	});
-
-	it("shows one row per roster entry even when the persona has no definition", () => {
-		// A member in the roster whose persona def is missing still renders
-		// (model falls back to '(default)'). Council resolves it the same way.
-		const items = buildMainMenu({
-			...DEFAULT_CONFIG,
-			personas: {},
-			modes: { ...DEFAULT_CONFIG.modes, council: { ...DEFAULT_CONFIG.modes!.council!, members: ["architect"] } },
-		});
-		expect(items.filter((i) => i.value === "persona.architect").length).toBe(1);
-	});
-
-	it("omits member rows when the roster is empty", () => {
-		const items = buildMainMenu({
-			...DEFAULT_CONFIG,
-			modes: { ...DEFAULT_CONFIG.modes, council: { ...DEFAULT_CONFIG.modes!.council!, members: [] } },
-		});
-		expect(items.filter((i) => i.value.startsWith("persona.")).length).toBe(0);
-		// the management entry is always present
+	it("has ONE council entry and no per-member rows (collapsed)", () => {
+		// After the tidy-up: council editing lives behind a single submenu entry.
+		// No persona.* rows, no council.synth on the main menu — those moved to the
+		// submenu (buildCouncilMenu) so there's no dead-end "basic" path.
+		const items = buildMainMenu(DEFAULT_CONFIG);
 		expect(items.some((i) => i.value === "council.manage")).toBe(true);
+		expect(items.filter((i) => i.value.startsWith("persona.")).length).toBe(0);
+		expect(items.some((i) => i.value === "council.synth")).toBe(false);
 	});
 
-	it("shows the synthesizer row only when a synthesizer is configured", () => {
-		const withSynth = buildMainMenu(DEFAULT_CONFIG);
-		expect(withSynth.some((i) => i.value === "council.synth")).toBe(true);
-
-		const noSynth = buildMainMenu({
-			...DEFAULT_CONFIG,
-			modes: { ...DEFAULT_CONFIG.modes, council: { ...DEFAULT_CONFIG.modes!.council!, synthesizer: undefined } },
-		});
-		expect(noSynth.some((i) => i.value === "council.synth")).toBe(false);
+	it("is short — solo/gut model+effort, one council entry, triggers, enabled, done", () => {
+		const items = buildMainMenu(DEFAULT_CONFIG);
+		expect(items.map((i) => i.value)).toEqual([
+			"defaultMode",
+			"solo.model",
+			"solo.effort",
+			"gutCheck.model",
+			"gutCheck.effort",
+			"council.manage",
+			"triggers.onDone",
+			"triggers.whenStuck",
+			"enabled",
+			"__done__",
+		]);
 	});
 
 	it("describes a dead model key without crashing (falls back to the raw key)", () => {
@@ -300,5 +275,18 @@ describe("describePersonaBackend + buildBackendItems", () => {
 		expect(items.map((i) => i.value)).toEqual(["inline", "cli:codex", "cli:claude", "cli:opencode", "__remove__"]);
 		expect(items.find((i) => i.value === "cli:claude")?.label).toContain("✓");
 		expect(items.find((i) => i.value === "cli:codex")?.label).not.toContain("✓");
+	});
+});
+
+describe("probeInlineModel (pre-assign candidate test)", () => {
+	it("fails fast with a clear detail when the candidate model isn't in the registry — no network call", async () => {
+		// The test-before-assign path must not even try a network call for a model
+		// that can't resolve; it should fail with a registry-miss detail so the
+		// user knows to pick a real model, not wait on a timeout.
+		const stubCtx = { modelRegistry: { find: () => undefined } } as never;
+		const persona = { name: "critic", stance: "against", systemPrompt: "x" } as never;
+		const r = await probeInlineModel(stubCtx, "madeup/no-such-model", persona);
+		expect(r.ok).toBe(false);
+		expect(r.detail).toMatch(/isn't in the registry/);
 	});
 });

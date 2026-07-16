@@ -86,10 +86,11 @@ Call `consult()` with no args and solo runs. Pass `mode: "council"` (or `debate`
 
 Type **`/consult`** to configure everything interactively — no file editing. It opens a menu: default mode, solo and gut-check models and effort, the council roster, both triggers, and enable/disable. Pick a setting, choose from a fuzzy-filterable list of the models you actually have authed, and the change saves immediately and the menu reopens so you can set several in one go. (`/consult status` prints the old read-out if you just want a glance.)
 
-The **Council members** submenu manages who's on the council:
+The **Council members** submenu (one entry on the main `/consult` menu) manages who's on the council. Each seated member opens a detail view:
 
-- **Assign a model** to any seated member (fuzzy-filter your authed models)
-- **Route a seat to a CLI backend** — per persona: inline, or codex / claude / opencode CLI. Each CLI seat runs as a subprocess in parallel with the inline seats, so one provider dying doesn't collapse the council. A **Test this model + persona** probe runs the counselor's actual prompt against the chosen model (inline or CLI) and reports whether it responds — catching a dead key, a 401, a hang, or a missing executable *before* you commit the seat.
+- **Assign a model** to the member (fuzzy-filter your authed models). Before committing, you can **Test with this persona first** — it probes the *candidate* model with the member's actual prompt and reports whether it responds, so a dead key or 401 is caught at selection time, not in a live council call. Assign only if it passes (or skip the test and assign now).
+- **Route the seat to a CLI backend** — inline, or codex / claude / opencode CLI. Each CLI seat runs as a subprocess in parallel with the inline seats, so one provider dying doesn't collapse the council. The same Test probe works for CLI routes (missing executable, timeout, nonzero exit, empty output).
+- **Retest the assigned route** any time from the same detail view.
 - **Enable / disable** a persona — unseating keeps its definition, so re-enabling restores its model
 - **Add manually** — type a name, pick a stance (for/against/neutral), pick a model
 - **Add AI-generated** — describe the advisor's focus, pick a model to draft it, confirm the `{name, stance, system prompt}` it returns, and seat it

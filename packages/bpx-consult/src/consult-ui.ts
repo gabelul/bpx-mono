@@ -29,7 +29,7 @@ import { loadConfig, resolvePersonaBackend, saveConfig, type LoadConfigOptions }
 import { callAdvisor, resolveAdvisor } from "./advisor.js";
 import { callCliAdvisor, cliContextWindow, type CliBackendConfig } from "./cli-backend.js";
 import { withTimeout } from "./timeout.js";
-import { personaSystemPrompt, resolvePersona } from "./personas.js";
+import { personaSystemPrompt, resolvePersona, type Persona } from "./personas.js";
 import { buildGeneratePrompt, GEN_SYSTEM_PROMPT, parsePersonaJson } from "./persona-gen.js";
 import { showFilterablePicker } from "./picker.js";
 
@@ -169,34 +169,22 @@ function describeModel(key: string | undefined): string {
 export function buildMainMenu(config: BpxConsultConfig): SelectItem[] {
 	const solo = config.modes?.solo;
 	const gut = config.modes?.gutCheck;
-	const council = config.modes?.council;
-	const personas = config.personas ?? {};
+	// Council member editing lives entirely behind one entry → its submenu, where
+	// each member gets the full detail (model / backend / test-before-assign /
+	// enable-disable / add). Surfacing bare member rows here gave a dead-end
+	// "basic" path with no test; collapsing to one entry removes that split.
 	const items: SelectItem[] = [
 		{ value: "defaultMode", label: `Default mode: ${config.defaultMode ?? "solo"}` },
 		{ value: "solo.model", label: `Solo model: ${describeModel(solo?.model)}` },
 		{ value: "solo.effort", label: `Solo effort: ${solo?.thinkingLevel ?? "(default)"}` },
 		{ value: "gutCheck.model", label: `Gut-check model: ${describeModel(gut?.model)}` },
 		{ value: "gutCheck.effort", label: `Gut-check effort: ${gut?.thinkingLevel ?? "(default)"}` },
+		{ value: "council.manage", label: "Council members…" },
+		{ value: "triggers.onDone", label: `Trigger — onDone: ${config.triggers?.onDone ? "on" : "off"}` },
+		{ value: "triggers.whenStuck", label: `Trigger — whenStuck: ${config.triggers?.whenStuck ?? 0}` },
+		{ value: "enabled", label: `Enabled: ${config.enabled === false ? "off" : "on"}` },
+		{ value: MENU_DONE, label: "Done" },
 	];
-
-	// One row per SEATED council member (driven by the roster, not the persona
-	// map) — so the rows reflect who's actually running, and a disabled member
-	// disappears here until re-enabled.
-	const members = council?.members ?? [];
-	for (const name of members) {
-		const modelKeyP = personas[name]?.defaultModel;
-		items.push({ value: `persona.${name}`, label: `Council — ${name} model: ${describeModel(modelKeyP)}` });
-	}
-	items.push({ value: "council.manage", label: "Council: enable / disable / add persona…" });
-
-	if (council?.synthesizer) {
-		items.push({ value: "council.synth", label: `Council — synthesizer model: ${describeModel(council.synthesizer.model)}` });
-	}
-
-	items.push({ value: "triggers.onDone", label: `Trigger — onDone: ${config.triggers?.onDone ? "on" : "off"}` });
-	items.push({ value: "triggers.whenStuck", label: `Trigger — whenStuck: ${config.triggers?.whenStuck ?? 0}` });
-	items.push({ value: "enabled", label: `Enabled: ${config.enabled === false ? "off" : "on"}` });
-	items.push({ value: MENU_DONE, label: "Done" });
 	return items;
 }
 
@@ -316,29 +304,14 @@ async function dispatch(
 		}
 
 		case "solo.model":
-		case "gutCheck.model":
-		case "council.synth": {
-			let title: string;
-			let currentKey: string | undefined;
-			if (choice === "council.synth") {
-				title = "Council synthesizer";
-				currentKey = config.modes.council?.synthesizer?.model;
-			} else if (choice === "gutCheck.model") {
-				title = "Gut-check model";
-				currentKey = config.modes.gutCheck?.model;
-			} else {
-				title = "Solo model";
-				currentKey = config.modes.solo?.model;
-			}
+		case "gutCheck.model": {
+			const isGut = choice === "gutCheck.model";
+			const title = isGut ? "Gut-check model" : "Solo model";
+			const currentKey = isGut ? config.modes.gutCheck?.model : config.modes.solo?.model;
 			const picked = await pickModel(ctx, available, currentKey, title);
 			if (picked === null) return null;
-			if (choice === "council.synth") {
-				config.modes.council.synthesizer = { ...config.modes.council?.synthesizer, model: picked };
-			} else if (choice === "gutCheck.model") {
-				config.modes.gutCheck.model = picked;
-			} else {
-				config.modes.solo.model = picked;
-			}
+			if (isGut) config.modes.gutCheck.model = picked;
+			else config.modes.solo.model = picked;
 			return `${title} → ${describeModel(picked)}`;
 		}
 
@@ -390,20 +363,8 @@ async function dispatch(
 			return `bpx-consult ${picked === "true" ? "on" : "off"}`;
 		}
 
-		default: {
-			// persona.<name> — set a seated member's model
-			if (choice.startsWith("persona.")) {
-				const name = choice.slice("persona.".length);
-				config.personas ??= {};
-				const persona = config.personas[name] ?? {};
-				const picked = await pickModel(ctx, available, persona.defaultModel, `Council — ${name} model`);
-				if (picked === null) return null;
-				config.personas[name] = { ...persona, defaultModel: picked };
-				return `${name} model → ${describeModel(picked)}`;
-			}
-
-		return null;
-		}
+		default:
+			return null;
 	}
 }
 
@@ -677,9 +638,41 @@ async function runMemberDetail(
 		if (choice === "model") {
 			const picked = await pickModel(ctx, available, p.defaultModel, `${name} model`);
 			if (picked === null) continue;
-			config.personas![name] = { ...p, defaultModel: picked };
+			// Test-before-assign (the user's actual ask): don't persist yet. Offer to
+			// probe the CANDIDATE with this persona's prompt first, so a dead key is
+			// caught at selection time, not in a live council call.
+			const action = await showFilterablePicker(ctx, {
+				title: `Assign ${describeModel(picked)} to ${name}?`,
+				items: [
+					{ value: "assign", label: "Assign now" },
+					{ value: "test", label: "Test with this persona first" },
+					{ value: "cancel", label: "Cancel" },
+				],
+			});
+			if (action === null || action === "cancel") continue;
+			if (action === "test") {
+				const personaDef = resolvePersona(name, config.personas as never);
+				if (personaDef) {
+					const r = await probeInlineModel(ctx, picked, personaDef);
+					ctx.ui.notify(`${r.ok ? "✓" : "✗"} ${name}: ${r.detail}`, r.ok ? "info" : "error");
+					if (r.ok) {
+						const confirm = await showFilterablePicker(ctx, {
+							title: `${name}: ${r.detail}`,
+							items: [
+								{ value: "assign", label: "Assign this model" },
+								{ value: "back", label: "Back (pick a different model)" },
+							],
+						});
+						if (confirm !== "assign") continue;
+					} else {
+						continue; // failed probe → back to detail, re-pick
+					}
+				}
+			}
+			config.personas![name] = { ...persona(), defaultModel: picked };
 			if (!persist(ctx, config, options)) return;
 			config = loadConfig(options);
+			ctx.ui.notify(`${name} model → ${describeModel(picked)}`, "info");
 			continue;
 		}
 
@@ -722,69 +715,81 @@ async function runMemberDetail(
  * councils kept hitting. For CLI it catches missing-executable / timeout /
  * nonzero-exit / empty-output. Short timeout so a dead route fails fast.
  */
+const PROBE_TIMEOUT_MS = 30_000;
+const PROBE_MESSAGE = { role: "user" as const, content: "Reply with the single word OK and nothing else.", timestamp: 0 };
+
+/** Probe a CANDIDATE inline model with the persona's prompt — no config mutation.
+ * Returns {ok, detail} so callers (test-before-assign AND the retest) decide how
+ * to surface it. This is what catches a dead minimax/deepseek key before you
+ * commit the seat: call it with the picked modelKey, branch on ok. */
+export async function probeInlineModel(
+	ctx: ExtensionContext,
+	modelKey: string | undefined,
+	persona: Persona,
+): Promise<{ ok: boolean; detail: string }> {
+	const advisor = resolveAdvisor(ctx, modelKey);
+	if (!advisor) return { ok: false, detail: `model "${modelKey ?? "(none)"}" isn't in the registry` };
+	const outcome = await withTimeout(PROBE_TIMEOUT_MS, undefined, (signal) =>
+		callAdvisor({
+			ctx,
+			advisor,
+			systemPrompt: personaSystemPrompt(persona),
+			messages: [{ ...PROBE_MESSAGE, timestamp: Date.now() }],
+			thinkingLevel: persona.thinkingLevel,
+			signal,
+		}),
+	);
+	if (outcome.timedOut) return { ok: false, detail: `${advisor.label} timed out (30s) — hung or unreachable` };
+	if (!outcome.ok) {
+		const msg = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+		return { ok: false, detail: `${advisor.label} threw: ${msg.slice(0, 140)}` };
+	}
+	const result = outcome.value;
+	if (result.stopReason === "error" || !result.text) {
+		return { ok: false, detail: `${advisor.label} failed (${result.stopReason}): ${result.errorMessage?.slice(0, 120) ?? "no response"}. Auth likely invalid — re-run /login for that provider.` };
+	}
+	return { ok: true, detail: `${advisor.label} responded: "${result.text.trim().slice(0, 60)}"` };
+}
+
+/** Probe a CLI backend with the persona's prompt. Same {ok, detail} shape. */
+async function probeCliBackend(
+	ctx: ExtensionContext,
+	backend: CliBackendConfig,
+	persona: Persona,
+): Promise<{ ok: boolean; detail: string }> {
+	const r = await callCliAdvisor({
+		systemPrompt: personaSystemPrompt(persona),
+		messages: [{ ...PROBE_MESSAGE, timestamp: Date.now() }],
+		backend: { ...backend, timeoutMs: Math.min(backend.timeoutMs ?? PROBE_TIMEOUT_MS, PROBE_TIMEOUT_MS) },
+		signal: undefined,
+		cwd: ctx.cwd,
+	});
+	if (r.text.trim()) return { ok: true, detail: `cli:${backend.command} responded: "${r.text.trim().slice(0, 60)}"` };
+	if (r.errorMessage?.match(/failed to run|ENOENT/i)) return { ok: false, detail: `cli:${backend.command} not found on PATH` };
+	if (r.timedOut) return { ok: false, detail: `cli:${backend.command} timed out (30s)` };
+	if (r.exitCode !== null && r.exitCode !== 0) return { ok: false, detail: `cli:${backend.command} exited ${r.exitCode}: ${r.errorMessage?.slice(0, 120)}` };
+	return { ok: false, detail: `cli:${backend.command} returned no usable output` };
+}
+
+/**
+ * Retest the member's CURRENTLY ASSIGNED route (inline model or CLI backend) with
+ * its persona prompt, and notify. Distinct from the pre-assign candidate test:
+ * this re-checks whatever is already configured.
+ */
 async function testMemberRoute(ctx: ExtensionContext, config: BpxConsultConfig, name: string): Promise<void> {
 	const persona = resolvePersona(name, config.personas as never);
 	if (!persona) {
 		ctx.ui.notify(`No persona "${name}" to test.`, "error");
 		return;
 	}
-	const systemPrompt = personaSystemPrompt(persona);
-	const probe = { role: "user" as const, content: "Reply with the single word OK and nothing else.", timestamp: Date.now() };
 	const rawPersona = config.personas?.[name] ?? {};
 	const modelKey = persona.defaultModel ?? config.modes?.solo?.model;
 	const backend = resolvePersonaBackend(config, { backend: rawPersona.backend, defaultModel: modelKey });
-	const timeoutMs = 30_000;
-
-	// CLI route
-	if (backend?.type === "cli") {
-		ctx.ui.notify(`Probing ${name} → cli:${backend.command} (with the ${persona.stance} ${name} prompt)…`, "info");
-		const r = await callCliAdvisor({
-			systemPrompt,
-			messages: [probe],
-			backend: { ...backend, timeoutMs: Math.min(backend.timeoutMs ?? timeoutMs, timeoutMs) },
-			signal: undefined,
-			cwd: ctx.cwd,
-		});
-		if (r.text.trim()) {
-			ctx.ui.notify(`✓ ${name} (cli:${backend.command}) responded: "${r.text.trim().slice(0, 60)}"`, "info");
-		} else if (r.errorMessage?.match(/failed to run|ENOENT/i)) {
-			ctx.ui.notify(`✗ ${name}: cli:${backend.command} not found on PATH.`, "error");
-		} else if (r.timedOut) {
-			ctx.ui.notify(`✗ ${name}: cli:${backend.command} timed out (30s).`, "error");
-		} else if (r.exitCode !== null && r.exitCode !== 0) {
-			ctx.ui.notify(`✗ ${name}: cli:${backend.command} exited ${r.exitCode}: ${r.errorMessage?.slice(0, 120)}`, "error");
-		} else {
-			ctx.ui.notify(`✗ ${name}: cli:${backend.command} returned no usable output.`, "error");
-		}
-		return;
-	}
-
-	// Inline route
-	const advisor = resolveAdvisor(ctx, modelKey);
-	if (!advisor) {
-		ctx.ui.notify(`✗ ${name}: model "${modelKey ?? "(none)"}" isn't in the registry. Pick a model first.`, "error");
-		return;
-	}
-	ctx.ui.notify(`Probing ${name} → ${advisor.label} (with the ${persona.stance} ${name} prompt)…`, "info");
-	const outcome = await withTimeout(timeoutMs, undefined, (signal) =>
-		callAdvisor({ ctx, advisor, systemPrompt, messages: [probe], thinkingLevel: persona.thinkingLevel, signal }),
-	);
-	if (outcome.timedOut) {
-		ctx.ui.notify(`✗ ${name}: ${advisor.label} timed out (30s) — hung or unreachable.`, "error");
-		return;
-	}
-	if (!outcome.ok) {
-		const msg = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
-		ctx.ui.notify(`✗ ${name}: ${advisor.label} threw: ${msg.slice(0, 140)}`, "error");
-		return;
-	}
-	const result = outcome.value;
-	if (result.stopReason === "error" || !result.text) {
-		// This is the 401 / dead-key / no-auth path — the thing the live councils hit.
-		ctx.ui.notify(`✗ ${name}: ${advisor.label} failed (${result.stopReason}): ${result.errorMessage?.slice(0, 140) ?? "no response"}. Auth likely invalid — re-run /login for that provider.`, "error");
-		return;
-	}
-	ctx.ui.notify(`✓ ${name}: ${advisor.label} responded: "${result.text.trim().slice(0, 60)}"`, "info");
+	ctx.ui.notify(`Probing ${name}…`, "info");
+	const result = backend?.type === "cli"
+		? await probeCliBackend(ctx, backend, persona)
+		: await probeInlineModel(ctx, modelKey, persona);
+	ctx.ui.notify(`${result.ok ? "✓" : "✗"} ${name}: ${result.detail}`, result.ok ? "info" : "error");
 }
 
 /** Persist config, notify on failure. Returns false to signal the caller should abort. */
