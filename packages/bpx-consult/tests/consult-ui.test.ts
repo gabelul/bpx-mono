@@ -34,6 +34,8 @@ const {
 	buildBackendItems,
 	describePersonaBackend,
 	probeInlineModel,
+	parseCliArgs,
+	parseContextWindow,
 } = await import("../src/consult-ui.js");
 
 /** Minimal Model stub — modelKey reads {provider, id}; pickers read .name/.provider. */
@@ -269,10 +271,10 @@ describe("describePersonaBackend + buildBackendItems", () => {
 		expect(describePersonaBackend(cfg, { defaultModel: "openai/codex" })).toBe("cli:codex");
 	});
 
-	it("buildBackendItems lists inline + 3 presets + remove, marking the current", () => {
+	it("buildBackendItems lists inline + 3 presets + custom + remove, marking the current", () => {
 		const cfg = { personas: {}, backends: {} } as never;
 		const items = buildBackendItems(cfg, { backend: { type: "cli", command: "claude" } });
-		expect(items.map((i) => i.value)).toEqual(["inline", "cli:codex", "cli:claude", "cli:opencode", "__remove__"]);
+		expect(items.map((i) => i.value)).toEqual(["inline", "cli:codex", "cli:claude", "cli:opencode", "__custom__", "__remove__"]);
 		expect(items.find((i) => i.value === "cli:claude")?.label).toContain("✓");
 		expect(items.find((i) => i.value === "cli:codex")?.label).not.toContain("✓");
 	});
@@ -288,5 +290,46 @@ describe("probeInlineModel (pre-assign candidate test)", () => {
 		const r = await probeInlineModel(stubCtx, "madeup/no-such-model", persona);
 		expect(r.ok).toBe(false);
 		expect(r.detail).toMatch(/isn't in the registry/);
+	});
+});
+
+describe("parseCliArgs (structured argv, never shell)", () => {
+	it("splits comma-separated args, trims, drops blanks", () => {
+		expect(parseCliArgs("exec, --read-only ,  -v")).toEqual(["exec", "--read-only", "-v"]);
+	});
+	it("returns undefined for empty / blank-only input (no empty argv)", () => {
+		expect(parseCliArgs("")).toBeUndefined();
+		expect(parseCliArgs("   ")).toBeUndefined();
+		expect(parseCliArgs(undefined)).toBeUndefined();
+	});
+	it("drops trailing commas and empty segments", () => {
+		expect(parseCliArgs("exec,,")).toEqual(["exec"]);
+	});
+	it("never joins into a shell string — output is always an array", () => {
+		// Injection-safety: a value like `; rm -rf /` becomes one argv element,
+		// not a shell metacharacter, because spawn uses argv not a shell.
+		const r = parseCliArgs("; rm -rf /");
+		expect(Array.isArray(r)).toBe(true);
+		expect(r).toEqual(["; rm -rf /"]);
+	});
+});
+
+describe("parseContextWindow (required, no fallback)", () => {
+	it("accepts a positive integer", () => {
+		expect(parseContextWindow("200000")).toBe(200_000);
+		expect(parseContextWindow("  32768 ")).toBe(32_768);
+	});
+	it("rejects empty / blank (required — no silent fallback)", () => {
+		expect(parseContextWindow("")).toBeNull();
+		expect(parseContextWindow(undefined)).toBeNull();
+	});
+	it("rejects zero and negatives", () => {
+		expect(parseContextWindow("0")).toBeNull();
+		expect(parseContextWindow("-100")).toBeNull();
+	});
+	it("rejects non-integers", () => {
+		expect(parseContextWindow("200k")).toBeNull();
+		expect(parseContextWindow("1.5")).toBeNull();
+		expect(parseContextWindow("abc")).toBeNull();
 	});
 });

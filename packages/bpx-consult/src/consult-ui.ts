@@ -144,7 +144,26 @@ export function describePersonaBackend(config: BpxConsultConfig, persona: { back
 	return "inline";
 }
 
-/** Backend picker items: inline, the three CLI presets, remove route. */
+/** Parse a comma-separated args string into a structured argv array (never a shell
+ * string — spawn uses argv, so this is injection-safe by construction). Empty/
+ * blank entries dropped. */
+export function parseCliArgs(input: string | undefined): string[] | undefined {
+	if (!input || !input.trim()) return undefined;
+	const args = input.split(",").map((a) => a.trim()).filter((a) => a.length > 0);
+	return args.length > 0 ? args : undefined;
+}
+
+/** Parse a required positive-integer context window. Returns null when absent or
+ * not a positive int — the caller must reject (no silent fallback, per the
+ * window-safety rule). */
+export function parseContextWindow(input: string | undefined): number | null {
+	if (!input || !input.trim()) return null;
+	const n = Number(input.trim());
+	if (!Number.isInteger(n) || n <= 0) return null;
+	return n;
+}
+
+/** Backend picker items: inline, the three CLI presets, custom, remove route. */
 export function buildBackendItems(config: BpxConsultConfig, persona: { backend?: unknown; defaultModel?: string }): SelectItem[] {
 	const current = describePersonaBackend(config, persona);
 	const items: SelectItem[] = [{ value: "inline", label: current === "inline" ? `inline${CHECKMARK}` : "inline" }];
@@ -152,6 +171,7 @@ export function buildBackendItems(config: BpxConsultConfig, persona: { backend?:
 		const route = `cli:${cmd}`;
 		items.push({ value: route, label: current === route ? `${route}${CHECKMARK}` : route });
 	}
+	items.push({ value: "__custom__", label: "Custom CLI… (command + args + context window)" });
 	items.push({ value: "__remove__", label: "remove route (fall back to inline / legacy config)" });
 	return items;
 }
@@ -679,10 +699,27 @@ async function runMemberDetail(
 		if (choice === "backend") {
 			const picked = await showFilterablePicker(ctx, {
 				title: `Backend for ${name}`,
-				proseLines: ["Inline routes through pi's provider; CLI presets pipe the fitted context to the subprocess. Custom commands stay JSON-only."],
+				proseLines: ["Inline routes through pi's provider. CLI presets (codex/claude/opencode) pipe the fitted context to the subprocess. Custom CLI asks for command + args + context window and probes before saving."],
 				items: buildBackendItems(config, p),
 			});
 			if (picked === null) continue;
+
+			// Custom CLI: command → args → required contextWindow → test-before-save.
+			// Persisted only if the probe passes; a CLI that doesn't speak the stdin
+			// contract (markdown transcript in, text/JSONL out) is rejected.
+			if (picked === "__custom__") {
+				const personaDef = resolvePersona(name, config.personas as never);
+				if (!personaDef) continue;
+				const candidate = await runCustomCliFlow(ctx, personaDef);
+				if (candidate) {
+					config.personas![name] = { ...persona(), backend: candidate };
+					if (!persist(ctx, config, options)) return;
+					config = loadConfig(options);
+					ctx.ui.notify(`${name} backend → cli:${candidate.command}`, "info");
+				}
+				continue;
+			}
+
 			const cur = persona();
 			if (picked === "__remove__") {
 				const { backend: _drop, ...rest } = cur;
@@ -749,6 +786,32 @@ export async function probeInlineModel(
 		return { ok: false, detail: `${advisor.label} failed (${result.stopReason}): ${result.errorMessage?.slice(0, 120) ?? "no response"}. Auth likely invalid — re-run /login for that provider.` };
 	}
 	return { ok: true, detail: `${advisor.label} responded: "${result.text.trim().slice(0, 60)}"` };
+}
+
+/**
+ * Custom-CLI flow (council Plan A): collect command + structured args + a
+ * REQUIRED context window, then probe with probeCliBackend BEFORE returning.
+ * Returns the validated backend to assign, or null on cancel / invalid window /
+ * failed probe. No silent window fallback; args are a structured argv (never a
+ * shell string) so spawn stays injection-safe.
+ */
+async function runCustomCliFlow(ctx: ExtensionContext, persona: Persona): Promise<CliBackendConfig | null> {
+	const command = (await ctx.ui.input("CLI executable (must be on PATH)", "e.g. gemini-cli, qwen, my-agent"))?.trim();
+	if (!command) return null;
+	const argsRaw = await ctx.ui.input("Arguments (comma-separated, or empty)", "e.g. exec, --read-only");
+	const args = parseCliArgs(argsRaw ?? undefined);
+	const winRaw = await ctx.ui.input("Context window in tokens (required — no fallback)", "e.g. 200000");
+	const contextWindow = parseContextWindow(winRaw ?? undefined);
+	if (contextWindow === null) {
+		ctx.ui.notify("Custom CLI needs a positive-integer context window. Aborted — no fallback.", "error");
+		return null;
+	}
+	const candidate: CliBackendConfig = { type: "cli", command, args, contextWindow };
+	ctx.ui.notify(`Probing ${command} — it must accept the stdin contract (markdown transcript in, text/JSONL out)…`, "info");
+	const r = await probeCliBackend(ctx, candidate, persona);
+	ctx.ui.notify(`${r.ok ? "✓" : "✗"} ${command}: ${r.detail}`, r.ok ? "info" : "error");
+	if (!r.ok) return null;
+	return candidate;
 }
 
 /** Probe a CLI backend with the persona's prompt. Same {ok, detail} shape. */

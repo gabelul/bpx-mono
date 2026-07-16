@@ -89,7 +89,7 @@ Type **`/consult`** to configure everything interactively — no file editing. I
 The **Council members** submenu (one entry on the main `/consult` menu) manages who's on the council. Each seated member opens a detail view:
 
 - **Assign a model** to the member (fuzzy-filter your authed models). Before committing, you can **Test with this persona first** — it probes the *candidate* model with the member's actual prompt and reports whether it responds, so a dead key or 401 is caught at selection time, not in a live council call. Assign only if it passes (or skip the test and assign now).
-- **Route the seat to a CLI backend** — inline, or codex / claude / opencode CLI. Each CLI seat runs as a subprocess in parallel with the inline seats, so one provider dying doesn't collapse the council. The same Test probe works for CLI routes (missing executable, timeout, nonzero exit, empty output).
+- **Route the seat to a CLI backend** — inline, or codex / claude / opencode CLI, or a **Custom CLI** (any executable: command + structured args + a required context window). Each CLI seat runs as a subprocess in parallel with the inline seats, so one provider dying doesn't collapse the council. The same Test probe works for CLI routes (missing executable, timeout, nonzero exit, empty output), and a custom CLI must pass it before it's saved — it has to accept bpx-consult's stdin contract (markdown transcript in, text/JSONL out).
 - **Retest the assigned route** any time from the same detail view.
 - **Enable / disable** a persona — unseating keeps its definition, so re-enabling restores its model
 - **Add manually** — type a name, pick a stance (for/against/neutral), pick a model
