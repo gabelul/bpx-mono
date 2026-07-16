@@ -121,6 +121,19 @@ const ModesSchema = Type.Object(
 // Personas / backends (open — user-defined names must survive cleaning)
 // ---------------------------------------------------------------------------
 
+const BackendSchema = Type.Object(
+	{
+		type: Type.Optional(Type.Union([Type.Literal("inline"), Type.Literal("cli")])),
+		command: Type.Optional(Type.String()),
+		args: Type.Optional(Type.Array(Type.String())),
+		timeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
+		// Declared context window for a custom CLI (council §3). Preset commands
+		// don't need this; a custom command must declare it or the member pre-fails.
+		contextWindow: Type.Optional(Type.Integer({ minimum: 0 })),
+	},
+	{ additionalProperties: true },
+);
+
 const PersonaSchema = Type.Object(
 	{
 		name: Type.Optional(Type.String()),
@@ -128,16 +141,10 @@ const PersonaSchema = Type.Object(
 		stance: Type.Optional(Type.Union([Type.Literal("for"), Type.Literal("against"), Type.Literal("neutral")])),
 		defaultModel: Type.Optional(Type.String()),
 		thinkingLevel: Type.Optional(ThinkingLevelSchema),
-	},
-	{ additionalProperties: true },
-);
-
-const BackendSchema = Type.Object(
-	{
-		type: Type.Optional(Type.Union([Type.Literal("inline"), Type.Literal("cli")])),
-		command: Type.Optional(Type.String()),
-		args: Type.Optional(Type.Array(Type.String())),
-		timeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
+		// Persona-scoped backend (council §1): takes precedence over the legacy
+		// model-key `backends` map so two personas on the same model can route
+		// differently — one inline, one CLI. Undefined → fall back to model-key.
+		backend: Type.Optional(BackendSchema),
 	},
 	{ additionalProperties: true },
 );
@@ -452,7 +459,7 @@ const EFFORT_ORDINAL: readonly ThinkingLevel[] = ["minimal", "low", "medium", "h
  * else, so a user can say "route codex/codex to the codex CLI" without touching
  * the rest of the config. A backend entry with no `type` defaults to inline.
  */
-export function resolveBackend(config: BpxConsultConfig, modelKey: string | undefined): { type: "cli"; command: string; args?: string[]; timeoutMs?: number } | { type: "inline" } | undefined {
+export function resolveBackend(config: BpxConsultConfig, modelKey: string | undefined): { type: "cli"; command: string; args?: string[]; timeoutMs?: number; contextWindow?: number } | { type: "inline" } | undefined {
 	if (!modelKey) return undefined;
 	const entry = config.backends?.[modelKey];
 	if (!entry) return undefined;
@@ -462,9 +469,40 @@ export function resolveBackend(config: BpxConsultConfig, modelKey: string | unde
 			command: typeof entry.command === "string" ? entry.command : "codex",
 			args: Array.isArray(entry.args) ? entry.args : undefined,
 			timeoutMs: typeof entry.timeoutMs === "number" ? entry.timeoutMs : undefined,
+			contextWindow: typeof entry.contextWindow === "number" ? entry.contextWindow : undefined,
 		};
 	}
 	return { type: "inline" };
+}
+
+/**
+ * Resolve a persona's effective backend, persona-scoped first (council §1).
+ *
+ * Precedence: persona.backend (new, persona-scoped) → legacy model-key
+ * `backends[defaultModel]` → undefined (inline). The persona-scoped field is
+ * what lets two personas on the SAME model route differently — one inline,
+ * one CLI — which the model-key map alone can't express.
+ */
+export function resolvePersonaBackend(
+	config: BpxConsultConfig,
+	persona: { backend?: unknown; defaultModel?: string },
+): { type: "cli"; command: string; args?: string[]; timeoutMs?: number; contextWindow?: number } | { type: "inline" } | undefined {
+	const pb = persona.backend;
+	if (pb && typeof pb === "object") {
+		const entry = pb as { type?: string; command?: unknown; args?: unknown; timeoutMs?: unknown; contextWindow?: unknown };
+		if (entry.type === "cli") {
+			return {
+				type: "cli",
+				command: typeof entry.command === "string" ? entry.command : "codex",
+				args: Array.isArray(entry.args) ? entry.args : undefined,
+				timeoutMs: typeof entry.timeoutMs === "number" ? entry.timeoutMs : undefined,
+				contextWindow: typeof entry.contextWindow === "number" ? entry.contextWindow : undefined,
+			};
+		}
+		if (entry.type === "inline") return { type: "inline" };
+	}
+	// Legacy: model-key-scoped `backends[defaultModel]`.
+	return resolveBackend(config, persona.defaultModel);
 }
 
 export function isDisabledForModel(

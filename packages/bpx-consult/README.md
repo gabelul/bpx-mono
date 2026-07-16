@@ -89,12 +89,13 @@ Type **`/consult`** to configure everything interactively — no file editing. I
 The **Council members** submenu manages who's on the council:
 
 - **Assign a model** to any seated member (fuzzy-filter your authed models)
+- **Route a seat to a CLI backend** — per persona: inline, or codex / claude / opencode CLI. Each CLI seat runs as a subprocess in parallel with the inline seats, so one provider dying doesn't collapse the council. A **Test backend** probe checks the CLI works (missing executable, timeout, nonzero exit, empty output) before you rely on it.
 - **Enable / disable** a persona — unseating keeps its definition, so re-enabling restores its model
 - **Add manually** — type a name, pick a stance (for/against/neutral), pick a model
 - **Add AI-generated** — describe the advisor's focus, pick a model to draft it, confirm the `{name, stance, system prompt}` it returns, and seat it
 - **Synthesizer model** — the model that merges member verdicts into one call
 
-The default roster seats architect/critic/simplifier on distinct model tiers so parallel calls don't all hammer one provider. Advanced settings — context-budget char caps, timeouts, CLI backends — still live in the config file.
+The default roster seats architect/critic/simplifier on distinct model tiers so parallel calls don't all hammer one provider. CLI routing is persona-scoped — two seats on the same model can route differently (one inline, one CLI). Custom CLI commands (arbitrary command + args) and context-budget char caps still live in the config file.
 
 ---
 
@@ -191,7 +192,7 @@ Advice comes back differently depending on who asked for it. `feedbackMode` (def
 
 ## Backends
 
-Solo **and** council members can route to an external CLI instead of pi's inline provider. Set `backends.<model>.type: "cli"` in the config. Supported CLIs: `codex`, `claude`, `opencode`. Each reads the fitted context from stdin. The subprocess is non-blocking, so it doesn't serialize under the hood — and a council can mix inline and CLI seats in parallel, so one provider dying (rate limit, dead key) no longer collapses the whole council.
+Solo **and** council members can route to an external CLI instead of pi's inline provider. The `/consult` menu's Council members submenu sets this per persona: inline, or codex / claude / opencode CLI (with a Test-backend probe). For custom commands + args, set `backends.<model>.type: "cli"` in the config. Each reads the fitted context from stdin. The subprocess is non-blocking, so it doesn't serialize under the hood — and a council can mix inline and CLI seats in parallel, so one provider dying (rate limit, dead key) no longer collapses the whole council.
 
 ---
 

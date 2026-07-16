@@ -34,6 +34,12 @@ export interface CliBackendConfig {
 	command: CliCommand | string;
 	args?: string[];
 	timeoutMs?: number;
+	/** Declared context window (tokens) for a custom CLI whose underlying model
+	 * isn't known. Preset commands (codex/claude/opencode) have built-in windows
+	 * and don't need this; a custom command MUST declare one or the member is
+	 * pre-failed with a clear message rather than silently falling back to a
+	 * guessed window (council: 'remove the unverified 32k fallback'). */
+	contextWindow?: number;
 }
 
 export interface CliCallInput {
@@ -253,4 +259,32 @@ function extractJsonlText(line: string): string | undefined {
 
 function truncate(s: string, max: number): string {
 	return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+// ---------------------------------------------------------------------------
+// Context-window presets (council §3: 'presets must provide known context-
+// window caps; remove the unverified 32k fallback for unknown CLIs')
+// ---------------------------------------------------------------------------
+
+/**
+ * Known context windows for the preset CLI commands (the underlying models'
+ * real windows). Codex runs GPT-5-tier, Claude CLI runs Claude, OpenCode
+ * routes to a configured model — all ~200k. Conservative and safe; a user can
+ * override per-backend with `contextWindow` in config if they know better.
+ */
+export const CLI_WINDOW_PRESETS: Record<string, number> = {
+	codex: 200_000,
+	claude: 200_000,
+	opencode: 200_000,
+};
+
+/**
+ * Resolve a CLI backend's context window. Declared `contextWindow` wins; then
+ * the preset for known commands; then undefined for an unknown custom command
+ * with no declared window (the caller pre-fails the member rather than
+ * silently guessing — the 32k fallback is gone by design).
+ */
+export function cliContextWindow(backend: CliBackendConfig): number | undefined {
+	if (typeof backend.contextWindow === "number" && backend.contextWindow > 0) return backend.contextWindow;
+	return CLI_WINDOW_PRESETS[backend.command];
 }

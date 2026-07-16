@@ -19,8 +19,6 @@ import type { BpxConsultConfig } from "../src/config.js";
 import type { Persona } from "../src/personas.js";
 import type { ResolvedAdvisor } from "../src/advisor.js";
 
-const CLI_FALLBACK_WINDOW = 32_000;
-
 function persona(name: string, defaultModel?: string): Persona {
 	return { name, systemPrompt: `prompt for ${name}`, stance: name === "critic" ? "against" : "neutral", defaultModel };
 }
@@ -40,12 +38,12 @@ function stubRegistry(key: string | undefined): ResolvedAdvisor | undefined {
 	return undefined;
 }
 
-function configWith(opts: { backends?: BpxConsultConfig["backends"]; soloModel?: string }): BpxConsultConfig {
+function configWith(opts: { backends?: BpxConsultConfig["backends"]; soloModel?: string; personas?: BpxConsultConfig["personas"] }): BpxConsultConfig {
 	return {
 		enabled: true,
 		defaultMode: "council",
 		modes: { solo: { model: opts.soloModel ?? "anthropic/claude-haiku-4-5" } },
-		personas: {},
+		personas: opts.personas ?? {},
 		backends: opts.backends ?? {},
 		triggers: {},
 	} as BpxConsultConfig;
@@ -78,35 +76,71 @@ describe("resolveCouncilMembers — inline members", () => {
 });
 
 describe("resolveCouncilMembers — CLI members", () => {
-	it("resolves a CLI member and NEVER pre-fails even when the model isn't registered", () => {
-		// The whole point: a CLI binary isn't in the registry, so a CLI member
-		// must not be treated as a resolution failure the way an inline one is.
+	it("resolves a preset CLI member (codex) with its preset window, never pre-failing on the missing registry model", () => {
+		// A CLI binary isn't in the registry; a preset command (codex/claude/opencode)
+		// resolves with its built-in window rather than guessing or failing.
 		const cfg = configWith({ backends: { "openai/codex": { type: "cli", command: "codex" } } });
 		const { resolved, preFailed } = resolveCouncilMembers([persona("critic", "openai/codex")], cfg, stubRegistry);
 		expect(preFailed).toHaveLength(0);
 		expect(resolved).toHaveLength(1);
 		expect(resolved[0]?.kind).toBe("cli");
+		expect(resolved[0]?.contextWindow).toBe(200_000); // codex preset
 	});
 
-	it("falls back to 32k when the CLI member's modelKey isn't registered", () => {
-		const cfg = configWith({ backends: { "openai/codex": { type: "cli", command: "codex" } } });
-		const { resolved } = resolveCouncilMembers([persona("critic", "openai/codex")], cfg, stubRegistry);
-		expect(resolved[0]?.contextWindow).toBe(CLI_FALLBACK_WINDOW);
-	});
-
-	it("uses the registry window when the CLI member's modelKey IS registered", () => {
-		// Keying a CLI backend to a known small model lets the fit use that
-		// model's real window instead of the conservative 32k floor.
-		const cfg = configWith({ backends: { "google/gemini-2.5-flash": { type: "cli", command: "gemini" } } });
-		const { resolved } = resolveCouncilMembers([persona("critic", "google/gemini-2.5-flash")], cfg, stubRegistry);
+	it("uses a declared contextWindow on a custom CLI command", () => {
+		// Council §3: custom JSON backends must declare a window. A declared one wins.
+		const cfg = configWith({ backends: { "local/my-cli": { type: "cli", command: "my-cli", contextWindow: 64_000 } } });
+		const { resolved, preFailed } = resolveCouncilMembers([persona("critic", "local/my-cli")], cfg, stubRegistry);
+		expect(preFailed).toHaveLength(0);
 		expect(resolved[0]?.kind).toBe("cli");
-		expect(resolved[0]?.contextWindow).toBe(1_000_000);
+		expect(resolved[0]?.contextWindow).toBe(64_000);
 	});
 
-	it("carries the modelKey as the label (CLI members have no resolved advisor.label)", () => {
+	it("pre-fails a custom CLI with NO declared window and NO preset (the 32k fallback is gone)", () => {
+		// Council §3: remove the unverified 32k fallback. An unknown command with
+		// no declared window must fail clearly, not silently guess a window.
+		const cfg = configWith({ backends: { "local/mystery": { type: "cli", command: "mystery-tool" } } });
+		const { resolved, preFailed } = resolveCouncilMembers([persona("critic", "local/mystery")], cfg, stubRegistry);
+		expect(resolved).toHaveLength(0);
+		expect(preFailed).toHaveLength(1);
+		expect(preFailed[0]?.errorMessage).toMatch(/no known context window/i);
+	});
+
+	it("labels a CLI member as cli:<command>", () => {
 		const cfg = configWith({ backends: { "openai/codex": { type: "cli", command: "codex" } } });
 		const { resolved } = resolveCouncilMembers([persona("critic", "openai/codex")], cfg, stubRegistry);
-		expect(resolved[0]?.modelLabel).toBe("openai/codex");
+		expect(resolved[0]?.modelLabel).toBe("cli:codex");
+	});
+});
+
+describe("resolveCouncilMembers — persona-scoped routing (council §1)", () => {
+	it("two personas on the SAME model route differently when one has a persona.backend", () => {
+		// The headline of the proper-B redesign: the legacy model-key map can't
+		// express this — only persona-scoped backend can.
+		const cfg = configWith({
+			personas: {
+				architect: { defaultModel: "anthropic/claude-haiku-4-5" }, // inline
+				critic: { defaultModel: "anthropic/claude-haiku-4-5", backend: { type: "cli", command: "codex" } }, // CLI, same model key
+			},
+		});
+		const { resolved } = resolveCouncilMembers(
+			[persona("architect", "anthropic/claude-haiku-4-5"), persona("critic", "anthropic/claude-haiku-4-5")],
+			cfg,
+			stubRegistry,
+		);
+		expect(resolved.map((m) => m.kind)).toEqual(["inline", "cli"]);
+		expect(resolved[1]?.modelLabel).toBe("cli:codex");
+	});
+
+	it("persona.backend takes precedence over a legacy model-key backend entry", () => {
+		// Same model key has a legacy CLI backend, but the persona says inline →
+		// persona wins. defaultModel is registry-known so inline actually resolves.
+		const cfg = configWith({
+			backends: { "anthropic/claude-haiku-4-5": { type: "cli", command: "codex" } }, // legacy says CLI
+			personas: { critic: { defaultModel: "anthropic/claude-haiku-4-5", backend: { type: "inline" } } }, // persona says inline
+		});
+		const { resolved } = resolveCouncilMembers([persona("critic", "anthropic/claude-haiku-4-5")], cfg, stubRegistry);
+		expect(resolved[0]?.kind).toBe("inline");
 	});
 });
 
@@ -123,7 +157,7 @@ describe("resolveCouncilMembers — mixed rosters", () => {
 		expect(resolved.map((m) => m.kind)).toEqual(["inline", "cli", "inline"]);
 		expect(resolved.map((m) => m.modelLabel)).toEqual([
 			"anthropic/claude-haiku-4-5",
-			"openai/codex",
+			"cli:codex",
 			"google/gemini-2.5-flash",
 		]);
 	});

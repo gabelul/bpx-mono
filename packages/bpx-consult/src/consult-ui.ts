@@ -25,8 +25,9 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { modelKey, parseModelKey } from "@juicesharp/rpiv-config";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import type { BpxConsultConfig } from "./config.js";
-import { loadConfig, saveConfig, type LoadConfigOptions } from "./config.js";
+import { loadConfig, resolvePersonaBackend, saveConfig, type LoadConfigOptions } from "./config.js";
 import { callAdvisor, resolveAdvisor } from "./advisor.js";
+import { callCliAdvisor, cliContextWindow, type CliBackendConfig } from "./cli-backend.js";
 import { buildGeneratePrompt, GEN_SYSTEM_PROMPT, parsePersonaJson } from "./persona-gen.js";
 import { showFilterablePicker } from "./picker.js";
 
@@ -113,7 +114,11 @@ export function buildCouncilMenu(config: BpxConsultConfig): SelectItem[] {
 	const unseated = Object.keys(personas).filter((n) => !members.includes(n));
 	const items: SelectItem[] = [];
 	for (const name of members) {
-		items.push({ value: `member.${name}`, label: `${name} — model: ${describeModel(personas[name]?.defaultModel)}` });
+		const p = personas[name] ?? {};
+		// Route visibility (council §4): show the effective backend next to the model
+		// so a user can see at a glance who's inline vs CLI-routed.
+		const route = describePersonaBackend(config, p);
+		items.push({ value: `member.${name}`, label: `${name} — model: ${describeModel(p.defaultModel)}  [${route}]` });
 	}
 	items.push({ value: "disable", label: members.length ? "Disable a member…" : "(no members seated)" });
 	items.push({
@@ -124,6 +129,28 @@ export function buildCouncilMenu(config: BpxConsultConfig): SelectItem[] {
 	items.push({ value: "add.ai", label: "Add a persona (AI-generated)…" });
 	items.push({ value: "council.synth", label: `Synthesizer model: ${describeModel(config.modes?.council?.synthesizer?.model)}` });
 	items.push({ value: MENU_BACK, label: "Back" });
+	return items;
+}
+
+/** The narrow CLI presets the menu offers (council §2). Custom commands stay JSON-only. */
+const CLI_PRESETS = ["codex", "claude", "opencode"] as const;
+
+/** Human label for a persona's effective backend (route visibility, council §4). */
+export function describePersonaBackend(config: BpxConsultConfig, persona: { backend?: unknown; defaultModel?: string }): string {
+	const b = resolvePersonaBackend(config, persona);
+	if (b?.type === "cli") return `cli:${b.command}`;
+	return "inline";
+}
+
+/** Backend picker items: inline, the three CLI presets, remove route. */
+export function buildBackendItems(config: BpxConsultConfig, persona: { backend?: unknown; defaultModel?: string }): SelectItem[] {
+	const current = describePersonaBackend(config, persona);
+	const items: SelectItem[] = [{ value: "inline", label: current === "inline" ? `inline${CHECKMARK}` : "inline" }];
+	for (const cmd of CLI_PRESETS) {
+		const route = `cli:${cmd}`;
+		items.push({ value: route, label: current === route ? `${route}${CHECKMARK}` : route });
+	}
+	items.push({ value: "__remove__", label: "remove route (fall back to inline / legacy config)" });
 	return items;
 }
 
@@ -510,11 +537,8 @@ export async function runCouncilSubmenu(
 		// member.<name> — assign model
 		if (choice.startsWith("member.")) {
 			const name = choice.slice("member.".length);
-			const picked = await pickModel(ctx, available, personas[name]?.defaultModel, `${name} model`);
-			if (picked === null) continue;
-			personas[name] = { ...personas[name], defaultModel: picked };
-			if (!persist(ctx, config, options)) return;
-			config = loadConfig(options);
+			await runMemberDetail(ctx, config, name, available, options);
+			config = loadConfig(options); // reload — model/backend/test may have changed config
 			continue;
 		}
 
@@ -604,6 +628,118 @@ export async function runCouncilSubmenu(
 			config = loadConfig(options);
 			continue;
 		}
+	}
+}
+
+/**
+ * One member's detail submenu: set model, set backend (inline / CLI preset /
+ * remove), and test a CLI backend with a probe (council §2 + §4). Persists each
+ * change immediately and reloads so the menu reflects what's on disk.
+ */
+async function runMemberDetail(
+	ctx: ExtensionContext,
+	config: BpxConsultConfig,
+	name: string,
+	available: Model<Api>[],
+	options: LoadConfigOptions,
+): Promise<void> {
+	config.personas ??= {};
+	const persona = () => config.personas![name] ?? {};
+
+	for (;;) {
+		const p = persona();
+		const route = describePersonaBackend(config, p);
+		// Show the fitted window for a CLI route so the user sees the real cap.
+		const fitWindow =
+			route === "inline"
+				? "(registry)"
+				: (() => {
+					const b = resolvePersonaBackend(config, p);
+					return b?.type === "cli" ? String(cliContextWindow(b) ?? "unknown — declare contextWindow") : "(registry)";
+				})();
+		const choice = await showFilterablePicker(ctx, {
+			title: `Council — ${name}`,
+			proseLines: [
+				`Model: ${describeModel(p.defaultModel)}`,
+				`Backend: ${route}  (fitted window: ${fitWindow})`,
+			],
+			items: [
+				{ value: "model", label: "Set model…" },
+				{ value: "backend", label: `Set backend… (${route})` },
+				{ value: "test", label: route === "inline" ? "Test backend  (inline — nothing to test)" : "Test backend (run a probe)…" },
+				{ value: MENU_BACK, label: "Back" },
+			],
+		});
+		if (choice === null || choice === MENU_BACK) return;
+
+		if (choice === "model") {
+			const picked = await pickModel(ctx, available, p.defaultModel, `${name} model`);
+			if (picked === null) continue;
+			config.personas![name] = { ...p, defaultModel: picked };
+			if (!persist(ctx, config, options)) return;
+			config = loadConfig(options);
+			continue;
+		}
+
+		if (choice === "backend") {
+			const picked = await showFilterablePicker(ctx, {
+				title: `Backend for ${name}`,
+				proseLines: ["Inline routes through pi's provider; CLI presets pipe the fitted context to the subprocess. Custom commands stay JSON-only."],
+				items: buildBackendItems(config, p),
+			});
+			if (picked === null) continue;
+			const cur = persona();
+			if (picked === "__remove__") {
+				const { backend: _drop, ...rest } = cur;
+				config.personas![name] = rest;
+			} else if (picked === "inline") {
+				config.personas![name] = { ...cur, backend: { type: "inline" } };
+			} else {
+				// cli:<command> preset
+				const command = picked.slice("cli:".length);
+				config.personas![name] = { ...cur, backend: { type: "cli", command } };
+			}
+			if (!persist(ctx, config, options)) return;
+			config = loadConfig(options);
+			ctx.ui.notify(`${name} backend → ${describePersonaBackend(config, persona())}`, "info");
+			continue;
+		}
+
+		if (choice === "test") {
+			const b = resolvePersonaBackend(config, persona());
+			if (b?.type !== "cli") continue;
+			await testBackend(ctx, b);
+			continue;
+		}
+	}
+}
+
+/**
+ * Probe a CLI backend with a one-word prompt and surface a clear result category
+ * (council §4): missing executable, timeout, nonzero exit, malformed output, or
+ * success. Reuses callCliAdvisor with a short timeout so a dead CLI fails fast.
+ */
+async function testBackend(ctx: ExtensionContext, backend: CliBackendConfig): Promise<void> {
+	ctx.ui.notify(`Probing ${backend.command}…`, "info");
+	const result = await callCliAdvisor({
+		systemPrompt: "Reply with the single word OK and nothing else.",
+		messages: [{ role: "user", content: "ping", timestamp: Date.now() }],
+		backend: { ...backend, timeoutMs: Math.min(backend.timeoutMs ?? 30_000, 30_000) },
+		signal: undefined,
+		cwd: ctx.cwd,
+	});
+	if (result.text.trim()) {
+		ctx.ui.notify(`✓ ${backend.command} responded: "${result.text.trim().slice(0, 60)}"`, "info");
+		return;
+	}
+	if (result.errorMessage?.match(/failed to run|ENOENT/i)) {
+		ctx.ui.notify(`✗ ${backend.command} not found on PATH. Install it or fix the command.`, "error");
+	} else if (result.timedOut) {
+		ctx.ui.notify(`✗ ${backend.command} timed out (30s). Hung or misconfigured.`, "error");
+	} else if (result.exitCode !== null && result.exitCode !== 0) {
+		ctx.ui.notify(`✗ ${backend.command} exited ${result.exitCode}: ${result.errorMessage?.slice(0, 120)}`, "error");
+	} else {
+		ctx.ui.notify(`✗ ${backend.command} returned no usable output: ${result.errorMessage?.slice(0, 120) ?? "empty"}`, "error");
 	}
 }
 

@@ -14,10 +14,10 @@ import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from 
 import type { Message, ThinkingLevel } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
-import { callCliAdvisor, type CliBackendConfig } from "./cli-backend.js";
+import { callCliAdvisor, cliContextWindow, type CliBackendConfig } from "./cli-backend.js";
 import { withTimeout } from "./timeout.js";
 import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSummary } from "./context-engine.js";
-import { resolveBackend, type BpxConsultConfig } from "./config.js";
+import { resolvePersonaBackend, type BpxConsultConfig } from "./config.js";
 import {
 	computeConfidence,
 	detectDisagreement,
@@ -71,15 +71,6 @@ export interface ExecuteCouncilInput {
 type ResolvedMember =
 	| { persona: Persona; kind: "inline"; advisor: ResolvedAdvisor; contextWindow: number; modelLabel: string }
 	| { persona: Persona; kind: "cli"; backend: CliBackendConfig; contextWindow: number; modelLabel: string };
-
-/**
- * Fallback context window for a CLI member whose modelKey isn't in the registry
- * (a CLI binary isn't registered, so its window can't be looked up). Conservative
- * 32k — same default the context engine uses for an unknown advisor window.
- * Keying a CLI backend to a registered small model lets the fit use that model's
- * real (smaller) window instead; this is the safe floor.
- */
-const CLI_FALLBACK_WINDOW = 32_000;
 
 export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentToolResult<CouncilDetails>> {
 	const { ctx, config, signal, onUpdate, question } = input;
@@ -355,14 +346,30 @@ export function resolveCouncilMembers(
 	const preFailed: MemberResult[] = [];
 	for (const persona of personas) {
 		const modelKey = persona.defaultModel ?? config.modes?.solo?.model;
-		// CLI backend configured? Route through callCliAdvisor — the model need
-		// not be in the registry. Window falls back to 32k if the key isn't
-		// registered (SPEC §O); keying it to a registered small model uses that
-		// model's real window instead.
-		const backend = resolveBackend(config, modelKey);
+		// Persona-scoped backend (council §1): persona.backend takes precedence
+		// over the legacy model-key `backends` map, so two personas on the same
+		// model can route differently. Looked up from the RAW config persona
+		// (the resolved Persona carries defaultModel but not backend).
+		const rawPersona = config.personas?.[persona.name] ?? {};
+		const backend = resolvePersonaBackend(config, { backend: rawPersona.backend, defaultModel: modelKey });
 		if (backend?.type === "cli") {
-			const registryWindow = resolveAdvisor(modelKey)?.model.contextWindow;
-			resolved.push({ persona, kind: "cli", backend, contextWindow: registryWindow ?? CLI_FALLBACK_WINDOW, modelLabel: modelKey ?? "(none)" });
+			// Window: declared contextWindow > preset (codex/claude/opencode) >
+			// undefined. No silent 32k fallback (council §3) — an unknown custom
+			// command with no declared window pre-fails with a clear message.
+			const window = cliContextWindow(backend);
+			if (window === undefined) {
+				preFailed.push({
+					persona: persona.name,
+					stance: persona.stance,
+					model: `cli:${backend.command}`,
+					status: "error",
+					text: "",
+					errorMessage: `CLI backend "${backend.command}" for ${persona.name} has no known context window. Set "contextWindow" on the backend in config, or use a preset command (codex/claude/opencode).`,
+					alignment: 0,
+				});
+				continue;
+			}
+			resolved.push({ persona, kind: "cli", backend, contextWindow: window, modelLabel: `cli:${backend.command}` });
 			continue;
 		}
 		const advisor = resolveAdvisor(modelKey);

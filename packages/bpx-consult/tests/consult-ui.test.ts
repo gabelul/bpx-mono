@@ -31,6 +31,8 @@ const {
 	buildStanceItems,
 	buildMainMenu,
 	buildCouncilMenu,
+	buildBackendItems,
+	describePersonaBackend,
 } = await import("../src/consult-ui.js");
 
 /** Minimal Model stub — modelKey reads {provider, id}; pickers read .name/.provider. */
@@ -274,5 +276,29 @@ describe("buildCouncilMenu", () => {
 		} finally {
 			process.env.PI_CODING_AGENT_DIR = orig;
 		}
+	});
+});
+
+describe("describePersonaBackend + buildBackendItems", () => {
+	it("reports inline when no backend is configured", () => {
+		expect(describePersonaBackend({ personas: {}, backends: {} } as never, { defaultModel: "anthropic/x" })).toBe("inline");
+	});
+
+	it("reports cli:<command> for a persona-scoped CLI backend", () => {
+		const cfg = { personas: {}, backends: {} } as never;
+		expect(describePersonaBackend(cfg, { backend: { type: "cli", command: "codex" } })).toBe("cli:codex");
+	});
+
+	it("falls back to a legacy model-key backend when persona has none", () => {
+		const cfg = { personas: {}, backends: { "openai/codex": { type: "cli", command: "codex" } } } as never;
+		expect(describePersonaBackend(cfg, { defaultModel: "openai/codex" })).toBe("cli:codex");
+	});
+
+	it("buildBackendItems lists inline + 3 presets + remove, marking the current", () => {
+		const cfg = { personas: {}, backends: {} } as never;
+		const items = buildBackendItems(cfg, { backend: { type: "cli", command: "claude" } });
+		expect(items.map((i) => i.value)).toEqual(["inline", "cli:codex", "cli:claude", "cli:opencode", "__remove__"]);
+		expect(items.find((i) => i.value === "cli:claude")?.label).toContain("✓");
+		expect(items.find((i) => i.value === "cli:codex")?.label).not.toContain("✓");
 	});
 });
