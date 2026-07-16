@@ -5,6 +5,13 @@ All notable changes to @booplex/bpx-consult are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0](https://github.com/gabelul/bpx-mono/compare/v0.9.0...v0.10.0) (2026-07-16)
+
+
+### Features
+
+* custom-CLI menu entry — route a seat to any installed CLI ([70fa04c](https://github.com/gabelul/bpx-mono/commit/70fa04cb77ff4cf4a54b91d6a9742fb2055a37cd))
+
 ## [0.9.0](https://github.com/gabelul/bpx-mono/compare/v0.8.0...v0.9.0) (2026-07-16)
 
 
