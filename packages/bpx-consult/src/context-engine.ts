@@ -419,7 +419,17 @@ export function deriveInputBudget(advisorContextWindow: number | undefined, budg
 	const window = advisorContextWindow ?? 32_000;
 	// Floor the reserve at a sane minimum; never let it eat the whole window.
 	const reserve = Math.min(budget.responseReserveTokens, Math.floor(window * 0.5));
-	return Math.max(1024, window - reserve);
+	// Uncertainty margin (Bug A): the token estimate (chars/3 × 1.15) can
+	// undercount real tokenization, especially for dense/code content, and at
+	// the window boundary that undercount trips the provider's hard limit — the
+	// exact §P failure this extension exists to prevent (observed: a 1M-token
+	// session sent to a 1M model, overshooting by 0.3% because the estimate was
+	// 0.7% low and no truncation fired). Subtract a proportional margin so the
+	// fit targets well under the hard ceiling, absorbing typical estimate error.
+	// The cost is slightly more truncation; the benefit is the advisor stops
+	// dying on long sessions. Solo also retries on a residual too-long (solo.ts).
+	const uncertaintyMargin = Math.floor(window * 0.1);
+	return Math.max(1024, window - reserve - uncertaintyMargin);
 }
 
 // ---------------------------------------------------------------------------
@@ -465,7 +475,7 @@ export function buildConsultContext(input: BuildContextInput): FitResult {
 	// tail); the marker reserve covers omission/compression/clip markers we add
 	// during assembly. Both are subtracted BEFORE the fill so the provisional math
 	// starts honest — RULE A still re-checks the assembled string regardless.
-	const directive = input.directive?.trim() || undefined;
+	const directive = input.directive?.trim() || "Review the conversation above and advise on the current task.";
 	const directiveTokens = directive ? estimateTokens(directive) + 8 : 0;
 	const markerReserve = MARKER_RESERVE_TOKENS;
 	const fillBudget = Math.max(256, maxInputTokens - directiveTokens - markerReserve);

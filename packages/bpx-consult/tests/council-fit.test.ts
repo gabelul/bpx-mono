@@ -45,7 +45,7 @@ describe("council §I fix — min-window fit", () => {
 		// THE §I invariant: output fits the smallest member's input budget.
 		expect(fit.estimatedTokens).toBeLessThanOrEqual(fit.maxInputTokens);
 		// And the budget was derived from the 32k window, not the 200k one.
-		expect(fit.maxInputTokens).toBe(32_000 - 4096);
+		expect(fit.maxInputTokens).toBe(32_000 - 4096 - 3_200);
 		// We actually REDUCED the transcript to get there (not a trivial fit). Under
 		// the §E.1 evidence-aware fit these 100 messages classify as directives
 		// (pinned), so the reduction shows up as compression/clipping rather than
@@ -67,7 +67,7 @@ describe("council §I fix — min-window fit", () => {
 			budget: BUDGET,
 		});
 
-		expect(fit.maxInputTokens).toBe(4_000); // 8k - 4k reserve (capped at half)
+		expect(fit.maxInputTokens).toBe(3_200); // 8k - 4k reserve (capped at half) - 800 uncertainty margin
 		expect(fit.estimatedTokens).toBeLessThanOrEqual(fit.maxInputTokens);
 	});
 });

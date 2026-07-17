@@ -20,7 +20,7 @@ import {
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callAdvisor, resolveAdvisor } from "./advisor.js";
+import { callAdvisor, resolveAdvisor, type ConsultCallResult } from "./advisor.js";
 import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSummary } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
 import { resolveBackend } from "./config.js";
@@ -39,6 +39,22 @@ import {
 	errMisconfigured,
 	msgConsulting,
 } from "./messages.js";
+
+// Bug A: retry the inline call when the provider rejects the payload as too
+// long, shrinking the effective window each attempt. The deriveInputBudget
+// margin makes this rare; this is the safety net for residual overshoot
+// (pathological dense content, a provider limit lower than the registry's
+// declared window). CLIs don't emit a structured too-long error, so this is
+// inline-only.
+const TOO_LONG_RE = /prompt is too long|context length|maximum context|too long|exceeds the/i;
+const MAX_TOO_LONG_RETRIES = 2;
+
+/** Does this advisor error message indicate the payload exceeded the provider's
+ * context limit? Pure so the matching logic is unit-testable against real
+ * provider error strings without a live call. */
+export function isTooLongError(errorMessage: string | undefined): boolean {
+	return !!errorMessage && TOO_LONG_RE.test(errorMessage);
+}
 
 // Load the system prompt once, with a fallback so a missing/unreadable file
 // never bricks the extension at import time. Bundled at prompts/advisor-system.txt.
@@ -123,7 +139,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 		? `Specific question from the executor: ${question.trim()}`
 		: undefined;
 
-	const fit = buildConsultContext({
+	let fit = buildConsultContext({
 		sessionMessages: branchMessages,
 		advisorContextWindow: advisorWindow,
 		budget: contextBudget,
@@ -173,16 +189,33 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 			stopReason = cliResult.text ? "stop" : cliResult.timedOut ? "aborted" : "error";
 			errorMessage = cliResult.errorMessage;
 		} else {
-			const result = await callAdvisor({
-				ctx,
-				advisor,
-				systemPrompt: ADVISOR_SYSTEM_PROMPT,
-				messages: fit.messages,
-				thinkingLevel,
-				signal,
-				sessionId: ctx.sessionManager.getSessionId(),
-				maxTokens,
-			});
+			// Inline path with too-long retry (Bug A). deriveInputBudget already
+			// subtracts a 10% uncertainty margin so overshoot is rare; a residual
+			// too-long shrinks the window and retries up to MAX_TOO_LONG_RETRIES times.
+			let effectiveWindow = advisorWindow;
+			let result: ConsultCallResult;
+			for (let attempt = 0; ; attempt++) {
+				const attemptFit = attempt === 0
+					? fit
+					: buildConsultContext({ sessionMessages: branchMessages, advisorContextWindow: effectiveWindow, budget: contextBudget, directive });
+				if (attemptFit.error) {
+					return err(`Couldn't fit the advisor window: ${attemptFit.error}`, {
+						advisorModel: advisor.label, thinkingLevel, mode: "solo",
+						fittedTokens: attemptFit.estimatedTokens, omitted: attemptFit.omittedCount,
+						ledger: summarizeLedger(attemptFit.ledger), errorMessage: attemptFit.error,
+					});
+				}
+				result = await callAdvisor({
+					ctx, advisor, systemPrompt: ADVISOR_SYSTEM_PROMPT, messages: attemptFit.messages,
+					thinkingLevel, signal, sessionId: ctx.sessionManager.getSessionId(), maxTokens,
+				});
+				const tooLong = isTooLongError(result.errorMessage);
+				if (!tooLong || attempt >= MAX_TOO_LONG_RETRIES) {
+					fit = attemptFit; // reflect the final (possibly shrunk) fit in details
+					break;
+				}
+				effectiveWindow = Math.floor(effectiveWindow * 0.8);
+			}
 			text = result.text;
 			usage = result.usage;
 			stopReason = result.stopReason;
@@ -196,7 +229,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 			usage,
 			fittedTokens: fit.estimatedTokens,
 			omitted: fit.omittedCount,
-			ledger: ledgerSummary,
+			ledger: summarizeLedger(fit.ledger),
 			stopReason,
 			errorMessage,
 		};

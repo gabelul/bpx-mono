@@ -208,15 +208,15 @@ describe("fitToWindow", () => {
 
 describe("deriveInputBudget", () => {
 	it("subtracts the response reserve from the advisor window", () => {
-		expect(deriveInputBudget(128_000, BUDGET)).toBe(128_000 - 4096);
+		expect(deriveInputBudget(128_000, BUDGET)).toBe(128_000 - 4096 - 12_800);
 	});
 	it("uses 32k fallback when the window is unknown", () => {
-		expect(deriveInputBudget(undefined, BUDGET)).toBe(32_000 - 4096);
+		expect(deriveInputBudget(undefined, BUDGET)).toBe(32_000 - 4096 - 3_200);
 	});
 	it("never lets the reserve eat more than half the window", () => {
 		const tiny: ContextBudget = { ...BUDGET, responseReserveTokens: 100_000 };
 		// window 32k, reserve capped to 16k → input budget 16k
-		expect(deriveInputBudget(32_000, tiny)).toBe(16_000);
+		expect(deriveInputBudget(32_000, tiny)).toBe(12_800);
 	});
 	it("floors the input budget at 1024 tokens", () => {
 		const huge: ContextBudget = { ...BUDGET, responseReserveTokens: 100_000 };
@@ -249,7 +249,7 @@ describe("buildConsultContext — the §P fix", () => {
 		// THE invariant: output fits the input budget.
 		expect(result.estimatedTokens).toBeLessThanOrEqual(result.maxInputTokens);
 		// The budget was derived from the advisor's 32k window, not a global constant.
-		expect(result.maxInputTokens).toBe(32_000 - 4096);
+		expect(result.maxInputTokens).toBe(32_000 - 4096 - 3_200);
 		// We dropped messages to get there.
 		expect(result.omittedCount).toBeGreaterThan(0);
 		// The directive was appended at the tail.
@@ -301,7 +301,43 @@ describe("buildConsultContext — the §P fix", () => {
 		// Reserve is capped at half the window (4096 > 4000 = half of 8k), so the
 		// input budget is 8k - 4k, not 8k - 4096. This is the reserve invariant
 		// doing its job on a tiny-window advisor.
-		expect(result.maxInputTokens).toBe(4_000);
+		expect(result.maxInputTokens).toBe(3_200);
 		expect(result.estimatedTokens).toBeLessThanOrEqual(result.maxInputTokens);
+	});
+});
+
+describe("Bug B — fitted context always ends with a user message (no prefill error)", () => {
+	it("appends a default trailing user message when no directive/question is given", () => {
+		// The prefill bug: a consult with no question forwarded a context ending
+		// on the executor's assistant message, which non-prefill providers reject
+		// ("must end with a user message"). buildConsultContext now guarantees a
+		// trailing user turn unconditionally.
+		const result = buildConsultContext({
+			sessionMessages: [userText("do the thing"), assistantText("on it")],
+			advisorContextWindow: 32_000,
+			budget: BUDGET,
+			directive: undefined, // no question → would have ended on the assistant msg
+		});
+		const last = result.messages[result.messages.length - 1];
+		expect(last?.role).toBe("user");
+	});
+
+	it("ends with a user message even when the session ends on an assistant turn", () => {
+		const result = buildConsultContext({
+			sessionMessages: [userText("hi"), assistantText("hello"), assistantText("working")],
+			advisorContextWindow: 32_000,
+			budget: BUDGET,
+		});
+		const last = result.messages[result.messages.length - 1];
+		expect(last?.role).toBe("user");
+	});
+});
+
+describe("Bug A — context-fitting has an uncertainty margin", () => {
+	it("deriveInputBudget subtracts a 10% margin on top of the response reserve", () => {
+		// The estimate can undercount real tokenization; a proportional margin so
+		// the fit targets well under the hard ceiling instead of grazing it.
+		expect(deriveInputBudget(100_000, BUDGET)).toBe(100_000 - 4096 - 10_000);
+		expect(deriveInputBudget(1_000_000, BUDGET)).toBe(1_000_000 - 4096 - 100_000);
 	});
 });

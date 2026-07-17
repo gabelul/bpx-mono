@@ -43,7 +43,7 @@ describe("§I fix — synthesizer input is window-fitted", () => {
 		// representation (RULE B). The old assertion pinned `omittedCount > 0`.
 		const summary = summarizeLedger(fit.ledger);
 		expect(summary.compressed + summary.clipped + summary.dropped).toBeGreaterThan(0);
-		expect(fit.maxInputTokens).toBe(32_000 - 4096);
+		expect(fit.maxInputTokens).toBe(32_000 - 4096 - 3_200);
 	});
 
 	it("fits even a tiny 8k synthesizer window under verbose member replies", () => {
@@ -53,7 +53,7 @@ describe("§I fix — synthesizer input is window-fitted", () => {
 			advisorContextWindow: 8_000,
 			budget: BUDGET,
 		});
-		expect(fit.maxInputTokens).toBe(4_000); // reserve capped at half
+		expect(fit.maxInputTokens).toBe(3_200); // reserve capped at half - 800 uncertainty margin
 		expect(fit.estimatedTokens).toBeLessThanOrEqual(fit.maxInputTokens);
 	});
 });
