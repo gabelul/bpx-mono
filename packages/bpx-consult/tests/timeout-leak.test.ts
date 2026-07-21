@@ -68,7 +68,7 @@ describe("AbortSignal listener cleanup (no leak)", () => {
 	});
 });
 
-describe("withTimeout — fn that ignores the abort signal", () => {
+	describe("withTimeout — fn that ignores the abort signal", () => {
 	it("returns promptly even when fn never resolves and ignores the signal", async () => {
 		// The old code awaited fn() directly — if fn ignored the abort signal,
 		// withTimeout hung forever despite the timer firing. The Promise.race
@@ -101,5 +101,19 @@ describe("withTimeout — fn that ignores the abort signal", () => {
 		if (!r.ok) expect(r.timedOut).toBe(true);
 		// Should return well before the 500ms fn would have resolved.
 		expect(elapsed).toBeLessThan(300);
+	});
+});
+
+describe("withTimeout — synchronous throw in fn", () => {
+	it("catches a sync throw without leaking the timer or parent listener", async () => {
+		// Before the Promise.resolve().then() fix, a fn that threw synchronously
+		// would skip the try/catch, leaking clearTimeout + cleanup.
+		const { signal, retained } = instrumentedSignal();
+		const result = await withTimeout(1000, signal, () => {
+			throw new Error("sync boom");
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.timedOut).toBe(false);
+		expect(retained()).toBe(0);
 	});
 });

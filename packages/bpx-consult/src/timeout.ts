@@ -50,7 +50,10 @@ export async function withTimeout<T>(
 	// returns the moment the abort fires, regardless of whether fn respects it.
 	// The abandoned fn continues in the background; its eventual result is
 	// swallowed by the .catch() in finally to prevent unhandled rejections.
-	const fnPromise = fn(ctrl.signal);
+	// Normalize sync throws into promise rejections. Without this, a fn that
+	// throws synchronously (instead of returning a rejected promise) would skip
+	// the try/catch below, leaking the timer and the parent-signal listener.
+	const fnPromise = Promise.resolve().then(() => fn(ctrl.signal));
 	const abortPromise = new Promise<never>((_, reject) => {
 		if (ctrl.signal.aborted) {
 			reject(ctrl.signal.reason instanceof Error ? ctrl.signal.reason : new Error("aborted"));
