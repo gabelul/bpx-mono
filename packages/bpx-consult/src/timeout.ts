@@ -54,14 +54,21 @@ export async function withTimeout<T>(
 	// throws synchronously (instead of returning a rejected promise) would skip
 	// the try/catch below, leaking the timer and the parent-signal listener.
 	const fnPromise = Promise.resolve().then(() => fn(ctrl.signal));
+
+	// Track the abort listener so we can remove it in finally. If fn wins the
+	// race normally, the listener on ctrl.signal would linger until GC — fine
+	// in most cases, but if the callback retains the signal, it leaks.
+	let removeAbortListener = () => {};
 	const abortPromise = new Promise<never>((_, reject) => {
 		if (ctrl.signal.aborted) {
 			reject(ctrl.signal.reason instanceof Error ? ctrl.signal.reason : new Error("aborted"));
 			return;
 		}
-		ctrl.signal.addEventListener("abort", () => {
+		const onAbort = () => {
 			reject(ctrl.signal.reason instanceof Error ? ctrl.signal.reason : new Error("aborted"));
-		}, { once: true });
+		};
+		ctrl.signal.addEventListener("abort", onAbort, { once: true });
+		removeAbortListener = () => ctrl.signal.removeEventListener("abort", onAbort);
 	});
 
 	try {
@@ -75,6 +82,7 @@ export async function withTimeout<T>(
 		}
 		return { ok: false, timedOut: false, error };
 	} finally {
+		removeAbortListener();
 		clearTimeout(timer);
 		cleanup();
 		// Swallow the abandoned fn's eventual rejection. If fn resolved (not
