@@ -5,6 +5,13 @@ All notable changes to @booplex/bpx-consult are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1](https://github.com/gabelul/bpx-mono/compare/v0.10.0...v0.10.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* advisor no longer dies on long sessions — too-long retry + trailing user message ([376734c](https://github.com/gabelul/bpx-mono/commit/376734cc826b2c9c031b2ed097588b84b5c00e51))
+
 ## [0.10.0](https://github.com/gabelul/bpx-mono/compare/v0.9.0...v0.10.0) (2026-07-16)
 
 
