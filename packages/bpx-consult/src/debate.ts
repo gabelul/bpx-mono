@@ -233,10 +233,13 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		details.stopReason = synthResult.stopReason;
 		details.errorMessage = synthResult.errorMessage;
 
-		if (!synthResult.text) {
+		// Mirror callStep's failure check: a provider error or abort with partial
+		// text is still a failure, not a usable verdict. Without this, a truncated
+		// synth response with stopReason "error" would slip through as ok().
+		if (synthResult.stopReason === "error" || synthResult.stopReason === "aborted" || !synthResult.text) {
 			// Synthesis failed after every round completed — hand back the debate
 			// so the minutes of argument aren't lost over the last call.
-			return bail(`Debate synthesizer returned no usable text: ${synthResult.errorMessage ?? "empty synthesis"}`);
+			return bail(`Debate synthesizer failed: ${synthResult.errorMessage ?? synthResult.stopReason ?? "empty synthesis"}`);
 		}
 		return ok(synthResult.text, details);
 	} catch (e) {
