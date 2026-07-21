@@ -148,6 +148,18 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 	// propagates into every callStep, so the in-flight round aborts cleanly.
 	const debateTimeoutMs = debateConfig?.timeoutMs ?? 180000;
 
+	// Track completed turns OUTSIDE the withTimeout callback so the timeout /
+	// error handlers below can still reach them. roundLog is a reference (array),
+	// so pushes inside the callback are visible out here after an abort.
+	// Same instinct as council.ts returning raw member verdicts when synthesis
+	// fails: losing minutes of completed argument to one late timeout is the
+	// single worst thing this mode can do to a user. It has already happened.
+	const roundLog: string[] = [];
+
+	/** Return completed rounds instead of discarding them. */
+	const bail = (error: string): AgentToolResult<DebateDetails> =>
+		err(formatDebatePartial(error, roundLog), { ...details, errorMessage: error });
+
 	const outcome = await withTimeout(debateTimeoutMs, parentSignal, async (debateSignal) => {
 	try {
 		// Round 1: advocate opens with the strongest FOR case.
@@ -155,7 +167,8 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		const r1Advocate = await callStep(ctx, advocate, advocatePersona.systemPrompt, fitWithContext(
 			"OPENING: make the strongest case FOR the position under debate.",
 		), advocatePersona.thinkingLevel, debateSignal, sessionId);
-		if (!r1Advocate.ok) { pushStep(1, "advocate", "error"); return err(`Round 1 advocate failed: ${r1Advocate.error}`, details); }
+		if (!r1Advocate.ok) { pushStep(1, "advocate", "error"); return bail(`Round 1 advocate failed: ${r1Advocate.error}`); }
+		roundLog.push(`### Round 1 — Advocate (FOR)\n${r1Advocate.text}`);
 		pushStep(1, "advocate", "ok");
 
 		// Walk the rounds. Round 1's critic attacks the round-1 advocate; for
@@ -171,7 +184,8 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 				const rebut = await callStep(ctx, advocate, personaSystemPrompt(advocatePersona), fitWithContext(
 					ADVOCATE_REBUT_FRAME(lastCriticText ?? ""),
 				), advocatePersona.thinkingLevel, debateSignal, sessionId);
-				if (!rebut.ok) { pushStep(round, "advocate", "error"); return err(`Round ${round} advocate rebuttal failed: ${rebut.error}`, details); }
+				if (!rebut.ok) { pushStep(round, "advocate", "error"); return bail(`Round ${round} advocate rebuttal failed: ${rebut.error}`); }
+				roundLog.push(`### Round ${round} — Advocate Rebuttal (FOR)\n${rebut.text}`);
 				pushStep(round, "advocate", "ok");
 				lastAdvocateText = rebut.text;
 			}
@@ -181,7 +195,8 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 			const attack = await callStep(ctx, critic, personaSystemPrompt(criticPersona), fitWithContext(
 				CRITIC_ATTACK_FRAME(lastAdvocateText),
 			), criticPersona.thinkingLevel, debateSignal, sessionId);
-			if (!attack.ok) { pushStep(round, "critic", "error"); return err(`Round ${round} critic attack failed: ${attack.error}`, details); }
+			if (!attack.ok) { pushStep(round, "critic", "error"); return bail(`Round ${round} critic attack failed: ${attack.error}`); }
+			roundLog.push(`### Round ${round} — Critic (AGAINST)\n${attack.text}`);
 			pushStep(round, "critic", "ok");
 			lastCriticText = attack.text;
 		}
@@ -219,24 +234,27 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		details.errorMessage = synthResult.errorMessage;
 
 		if (!synthResult.text) {
-			return err("Debate synthesizer returned no usable text.", { ...details, errorMessage: synthResult.errorMessage ?? "empty synthesis" });
+			// Synthesis failed after every round completed — hand back the debate
+			// so the minutes of argument aren't lost over the last call.
+			return bail(`Debate synthesizer returned no usable text: ${synthResult.errorMessage ?? "empty synthesis"}`);
 		}
 		return ok(synthResult.text, details);
 	} catch (e) {
 		const message = e instanceof Error ? e.message : String(e);
-		return err(`Debate threw: ${message}`, { ...details, errorMessage: message });
+		return bail(`Debate threw: ${message}`);
 	}
 	}); // end withTimeout body
 
-	// Unwrap the timeout outcome.
+	// Unwrap the timeout outcome. Both paths use formatDebatePartial so a wall-
+	// clock timeout or body throw doesn't discard completed rounds either.
 	if (outcome.timedOut) {
-		return err(`Debate timed out after ${debateTimeoutMs}ms (all rounds + synth budget).`, { ...details, errorMessage: `timeout after ${debateTimeoutMs}ms` });
+		return err(formatDebatePartial(`Debate timed out after ${debateTimeoutMs}ms (all rounds + synth budget).`, roundLog), { ...details, errorMessage: `timeout after ${debateTimeoutMs}ms` });
 	}
 	if (!outcome.ok) {
 		// A non-timeout error inside the body — the catch already converted it to
 		// an err() result, but withTimeout re-throws on the error path. Surface it.
 		const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
-		return err(`Debate failed: ${message}`, { ...details, errorMessage: message });
+		return err(formatDebatePartial(`Debate failed: ${message}`, roundLog), { ...details, errorMessage: message });
 	}
 	return outcome.value;
 }
@@ -295,4 +313,20 @@ function ok(text: string, details: DebateDetails): AgentToolResult<DebateDetails
 }
 function err(text: string, details: DebateDetails): AgentToolResult<DebateDetails> {
 	return { content: [{ type: "text", text }], details };
+}
+
+/**
+ * Format a mid-debate failure's output: the error plus any rounds that completed
+ * before the failure. Exported so the partial-preservation behavior is unit-testable
+ * without mocking the full ExtensionContext — same pattern as isTooLongError in solo.ts.
+ *
+ * An empty roundLog means nothing completed yet — return the bare error. Otherwise,
+ * hand back the argument so minutes of completed work aren't lost over one late
+ * failure. Same instinct as council.ts returning raw member verdicts when
+ * synthesis fails.
+ */
+export function formatDebatePartial(error: string, roundLog: string[]): string {
+	const completed = roundLog.join("\n\n---\n\n");
+	if (!completed) return error;
+	return `Debate incomplete — ${error}\n\nThe rounds that completed before the failure:\n\n${completed}`;
 }
