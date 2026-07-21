@@ -311,11 +311,16 @@ function emptyDetails(config: BpxConsultConfig): DebateDetails {
 	};
 }
 
+// Snapshot steps at return time. withTimeout can resolve (timeout) before the
+// aborted callback settles, and pushStep calls inside that callback would then
+// mutate the steps array after the result is already in the caller's hands.
+// Copying here — the final boundary — closes that race without touching every
+// call site. roundLog is already stable (joined into a string by bail).
 function ok(text: string, details: DebateDetails): AgentToolResult<DebateDetails> {
-	return { content: [{ type: "text", text }], details };
+	return { content: [{ type: "text", text }], details: { ...details, steps: [...details.steps] } };
 }
 function err(text: string, details: DebateDetails): AgentToolResult<DebateDetails> {
-	return { content: [{ type: "text", text }], details };
+	return { content: [{ type: "text", text }], details: { ...details, steps: [...details.steps] } };
 }
 
 /**
