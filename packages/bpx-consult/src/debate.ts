@@ -201,11 +201,11 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 			lastCriticText = attack.text;
 		}
 
-		// Synthesize the verdict from the full grown transcript.
-		const transcript = [
-			`### Round 1 — Advocate (FOR)\n${r1Advocate.text}`,
-			lastCriticText ? `### Final Critique (AGAINST)\n${lastCriticText}` : "",
-		].filter(Boolean).join("\n\n---\n\n");
+		// Synthesize the verdict from the FULL transcript. roundLog has every
+		// completed turn — the old code only passed round-1 advocate + the last
+		// critic, dropping the first critic and every rebuttal for multi-round
+		// debates. The synthesizer needs to see the whole exchange to weigh it.
+		const transcript = roundLog.join("\n\n---\n\n");
 		const synthInput = `The debate is complete. Here is the exchange:\n\n${transcript}\n\nIssue a decisive verdict for the executor.`;
 
 		// Re-fit the synthesizer input to its own window (it may be larger than
@@ -285,6 +285,13 @@ async function callStep(
 			signal,
 			sessionId,
 		});
+		// Reject a response that arrived after the signal aborted — the timeout
+		// (or a user abort) fired while we were waiting. The response may be
+		// truncated or from a stale context. Without this check, a late success
+		// after abort would slip through as a real result.
+		if (signal?.aborted) {
+			return { ok: false, error: "aborted" };
+		}
 		if (result.stopReason === "error" || result.stopReason === "aborted" || !result.text) {
 			return { ok: false, error: result.errorMessage ?? result.stopReason };
 		}

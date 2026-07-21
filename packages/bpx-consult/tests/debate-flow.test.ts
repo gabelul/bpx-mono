@@ -35,6 +35,10 @@ interface MockEntry {
 
 let callSequence: MockEntry[] = [];
 
+/** Records the input of each callAdvisor call, for asserting what the
+ * synthesizer received. */
+let mockCalls: Array<{ messages?: unknown[] }> = [];
+
 vi.mock("@earendil-works/pi-coding-agent", () => ({
 	buildSessionContext: () => ({ messages: [] }),
 	convertToLlm: () => [],
@@ -42,7 +46,8 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 
 vi.mock("../src/advisor.js", () => ({
 	resolveAdvisor: () => fakeAdvisor,
-	callAdvisor: async (input: { signal?: AbortSignal }) => {
+	callAdvisor: async (input: { signal?: AbortSignal; messages?: unknown[] }) => {
+		mockCalls.push(input);
 		const next = callSequence.shift();
 		if (!next) {
 			return { text: "", usage: undefined, stopReason: "error", errorMessage: "no more mock responses" };
@@ -100,6 +105,7 @@ function resultText(r: AgentToolResult<unknown>): string {
 
 beforeEach(() => {
 	callSequence = [];
+	mockCalls = [];
 });
 
 describe("executeDebate — partial-failure preserves completed rounds", () => {
@@ -240,5 +246,38 @@ describe("executeDebate — timeout and synthesizer stopReason paths", () => {
 		expect(text).toContain("synth failed");
 		// The truncated text is NOT presented as the verdict.
 		expect(text).not.toContain("### Verdict\ntruncated verdict");
+	});
+});
+
+describe("executeDebate — synthesizer receives the full transcript", () => {
+	it("feeds every round to the synthesizer, not just round 1 + last critic", async () => {
+		// Before the fix, the synth only saw round-1 advocate + the last critic.
+		// For a 2-round debate, that dropped the round-1 critic and the round-2
+		// advocate rebuttal — half the argument. Now roundLog feeds the synth.
+		callSequence = [
+			{ text: "R1 advocate opening.", stopReason: "end_turn" },
+			{ text: "R1 critic attacks.", stopReason: "end_turn" },
+			{ text: "R2 advocate rebuts.", stopReason: "end_turn" },
+			{ text: "R2 critic final attack.", stopReason: "end_turn" },
+			{ text: "The verdict.", stopReason: "end_turn" },
+		];
+
+		const result = await executeDebate({
+			ctx: makeCtx(),
+			config: configWith(2),
+			signal: undefined,
+			onUpdate: undefined,
+			question: "Full debate.",
+		});
+
+		expect(resultText(result)).toContain("The verdict.");
+
+		// The 5th call was the synthesizer. Its messages must contain every turn.
+		expect(mockCalls.length).toBeGreaterThanOrEqual(5);
+		const synthInput = JSON.stringify(mockCalls[4].messages);
+		expect(synthInput).toContain("R1 advocate opening.");
+		expect(synthInput).toContain("R1 critic attacks.");
+		expect(synthInput).toContain("R2 advocate rebuts.");
+		expect(synthInput).toContain("R2 critic final attack.");
 	});
 });

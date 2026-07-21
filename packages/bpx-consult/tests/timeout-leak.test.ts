@@ -67,3 +67,39 @@ describe("AbortSignal listener cleanup (no leak)", () => {
 		if (!r.ok) expect(r.timedOut).toBe(true);
 	});
 });
+
+describe("withTimeout — fn that ignores the abort signal", () => {
+	it("returns promptly even when fn never resolves and ignores the signal", async () => {
+		// The old code awaited fn() directly — if fn ignored the abort signal,
+		// withTimeout hung forever despite the timer firing. The Promise.race
+		// fix ensures we return when the abort fires, regardless of fn.
+		const r = await withTimeout(50, undefined, async () => {
+			// Deliberately ignore the signal — never resolve, never reject.
+			return new Promise<string>(() => {});
+		});
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.timedOut).toBe(true);
+	});
+
+	it("returns the value when fn resolves before the timeout", async () => {
+		const r = await withTimeout(1000, undefined, async () => "result");
+		expect(r.ok).toBe(true);
+		if (r.ok) expect(r.value).toBe("result");
+	});
+
+	it("returns promptly when fn ignores the signal but resolves late", async () => {
+		// fn resolves after 500ms, but the timeout is 50ms. We must return
+		// at ~50ms, not 500ms. The abandoned fn's eventual resolution is
+		// swallowed by the .catch() in finally.
+		const start = Date.now();
+		const r = await withTimeout(50, undefined, async () => {
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			return "late result";
+		});
+		const elapsed = Date.now() - start;
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.timedOut).toBe(true);
+		// Should return well before the 500ms fn would have resolved.
+		expect(elapsed).toBeLessThan(300);
+	});
+});

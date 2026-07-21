@@ -43,8 +43,26 @@ export async function withTimeout<T>(
 
 	const { ctrl, cleanup } = linkController(parentSignal);
 	const timer = setTimeout(() => ctrl.abort(new TimeoutError(timeoutMs)), timeoutMs);
+
+	// Race fn against the abort signal. Without this, a backend that ignores
+	// the signal hangs forever — the timer fires ctrl.abort() but `await fn()`
+	// never resolves because fn isn't listening. The race ensures withTimeout
+	// returns the moment the abort fires, regardless of whether fn respects it.
+	// The abandoned fn continues in the background; its eventual result is
+	// swallowed by the .catch() in finally to prevent unhandled rejections.
+	const fnPromise = fn(ctrl.signal);
+	const abortPromise = new Promise<never>((_, reject) => {
+		if (ctrl.signal.aborted) {
+			reject(ctrl.signal.reason instanceof Error ? ctrl.signal.reason : new Error("aborted"));
+			return;
+		}
+		ctrl.signal.addEventListener("abort", () => {
+			reject(ctrl.signal.reason instanceof Error ? ctrl.signal.reason : new Error("aborted"));
+		}, { once: true });
+	});
+
 	try {
-		const value = await fn(ctrl.signal);
+		const value = await Promise.race([fnPromise, abortPromise]);
 		return { ok: true, timedOut: false, value };
 	} catch (error) {
 		// Distinguish timeout-abort from any other error. The controller's abort
@@ -56,6 +74,10 @@ export async function withTimeout<T>(
 	} finally {
 		clearTimeout(timer);
 		cleanup();
+		// Swallow the abandoned fn's eventual rejection. If fn resolved (not
+		// rejected), the value is simply discarded — we already returned via
+		// the race. This prevents an unhandled-promise-rejection crash.
+		fnPromise.catch(() => {});
 	}
 }
 
