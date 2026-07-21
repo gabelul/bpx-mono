@@ -122,24 +122,24 @@ describe("withTimeout — internal abort listener cleanup", () => {
 	it("removes the ctrl.signal abort listener when fn wins normally", async () => {
 		// The abortPromise attaches a listener to ctrl.signal. If fn resolves
 		// before the timeout, that listener must be removed — otherwise, if the
-		// callback retains the signal, it leaks.
-		const retainedSignals: AbortSignal[] = [];
+		// callback retains the signal, it leaks. Instrument removeEventListener
+		// on the inner signal to verify the cleanup actually fires.
+		let abortRemovals = 0;
 		const result = await withTimeout(1000, undefined, async (innerSignal) => {
-			// fn retains the signal (e.g. stores it for later use) and resolves.
-			retainedSignals.push(innerSignal);
+			const origRemove = innerSignal.removeEventListener.bind(innerSignal);
+			innerSignal.removeEventListener = ((
+				type: string,
+				listener?: any,
+				opts?: any,
+			) => {
+				if (type === "abort") abortRemovals++;
+				return origRemove(type, listener, opts);
+			}) as typeof innerSignal.removeEventListener;
 			return "ok";
 		});
 		expect(result.ok).toBe(true);
-		// The signal still exists (fn retained it), but the abort listener that
-		// abortPromise attached should have been removed in finally.
-		expect(retainedSignals.length).toBe(1);
-		// Instrument the retained signal to verify no listener lingers.
-		const sig = retainedSignals[0];
-		let listenerCount = 0;
-		const origAdd = sig.addEventListener.bind(sig);
-		// We can't count existing listeners retroactively, but we can verify the
-		// signal is usable and not in a broken state — and that a second
-		// withTimeout call on a fresh controller doesn't accumulate.
-		expect(typeof origAdd).toBe("function");
+		// removeAbortListener() in finally must have removed the abort listener.
+		// If this is 0, the cleanup was deleted or broken.
+		expect(abortRemovals).toBe(1);
 	});
 });
