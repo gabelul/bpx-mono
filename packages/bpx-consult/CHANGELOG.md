@@ -5,6 +5,18 @@ All notable changes to @booplex/bpx-consult are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2](https://github.com/gabelul/bpx-mono/compare/v0.10.1...v0.10.2) (2026-07-21)
+
+
+### Bug Fixes
+
+* **debate+timeout:** withTimeout can't hang, synthesizer gets full transcript ([6dce881](https://github.com/gabelul/bpx-mono/commit/6dce8817edcfc8d743b5827149f2020699d6b44e))
+* **debate:** mid-debate failure no longer discards completed rounds ([1ebe8af](https://github.com/gabelul/bpx-mono/commit/1ebe8af8282ae7d687cc0d7b9741d099d13529ba))
+* **debate:** snapshot steps array at return to close timeout mutation race ([eb074b3](https://github.com/gabelul/bpx-mono/commit/eb074b3d414a6738d0838625e5e34c87f2e00fd1))
+* **debate:** synthesizer stopReason check + flow tests for partial preservation ([11a44a6](https://github.com/gabelul/bpx-mono/commit/11a44a66ddfd221b245dfb9328458fde09f83cba))
+* **timeout:** normalize sync throws so withTimeout can't leak ([b217d57](https://github.com/gabelul/bpx-mono/commit/b217d57ad7e03f6bbfe45f0ecb707bc495d2f472))
+* **timeout:** remove abort listener from ctrl.signal when fn wins normally ([3b7428e](https://github.com/gabelul/bpx-mono/commit/3b7428e983819dc21f39ec9af18f70d33e5a6abe))
+
 ## [0.10.1](https://github.com/gabelul/bpx-mono/compare/v0.10.0...v0.10.1) (2026-07-17)
 
 
