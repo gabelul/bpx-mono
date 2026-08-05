@@ -31,10 +31,12 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
-import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
+import { callAdvisor, resolveAdvisor } from "./advisor.js";
+import { callCliAdvisor } from "./cli-backend.js";
 import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSummary } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
 import { personaSystemPrompt, resolvePersona } from "./personas.js";
+import { resolveSide, type ResolvedSide } from "./resolve-side.js";
 import { withTimeout } from "./timeout.js";
 
 export interface DebateDetails {
@@ -87,24 +89,50 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		return err(`Unknown persona "${missing}". Check modes.debate in config.`, emptyDetails(config));
 	}
 
-	const advocate = resolveAdvisor(ctx, advocatePersona.defaultModel ?? config.modes?.solo?.model);
-	const critic = resolveAdvisor(ctx, criticPersona.defaultModel ?? config.modes?.solo?.model);
+	// Persona-scoped CLI routing (council §1 parity): a persona whose defaultModel
+	// is undefined (the bundled architect/critic fall back to solo.model) used to
+	// silently break in debate mode when solo.model was inline-only but the intended
+	// route was a CLI backend — resolveAdvisor returned undefined and the debate
+	// bailed with "no api key resolved". resolveSide shares council's per-persona
+	// backend routing so debate honours persona.backend and the legacy
+	// backends[modelKey] map identically.
+	const advocateResolution = resolveSide(
+		advocatePersona,
+		config.personas?.[advocatePersona.name],
+		config,
+		(key) => resolveAdvisor(ctx, key),
+	);
+	const criticResolution = resolveSide(
+		criticPersona,
+		config.personas?.[criticPersona.name],
+		config,
+		(key) => resolveAdvisor(ctx, key),
+	);
+	if (!advocateResolution.ok) {
+		return err(advocateResolution.errorMessage, emptyDetails(config));
+	}
+	if (!criticResolution.ok) {
+		return err(criticResolution.errorMessage, emptyDetails(config));
+	}
+	const advocate = advocateResolution.side;
+	const critic = criticResolution.side;
+
+	// Synthesizer stays inline-only to match council mode (council.ts:104
+	// resolves it via resolveAdvisor, never through resolveCouncilMembers).
+	// If the user has a CLI-backed synthesizer configured in council, the
+	// synthesizer fails to resolve here too — that's a pre-existing constraint
+	// shared with council, not a regression.
 	const synthKey = config.modes?.council?.synthesizer?.model ?? config.modes?.solo?.model;
 	const synth = resolveAdvisor(ctx, synthKey);
-	if (!advocate || !critic || !synth) {
-		const unresolved = [
-			!advocate && `advocate (${advocatePersona.defaultModel ?? config.modes?.solo?.model})`,
-			!critic && `critic (${criticPersona.defaultModel ?? config.modes?.solo?.model})`,
-			!synth && `synthesizer (${synthKey})`,
-		].filter(Boolean).join("; ");
-		return err(`Could not resolve debate models: ${unresolved}.`, emptyDetails(config));
+	if (!synth) {
+		return err(`Could not resolve debate synthesizer: ${synthKey}.`, emptyDetails(config));
 	}
 
 	const details: DebateDetails = {
 		mode: "debate",
 		rounds,
-		advocate: advocate.label,
-		critic: critic.label,
+		advocate: advocate.modelLabel,
+		critic: critic.modelLabel,
 		synthesizer: synth.label,
 		steps: [],
 	};
@@ -125,7 +153,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 
 	// The debate transcript grows each round — re-fit per call to the smaller of
 	// the two debaters' windows so the last round can't overflow (§C invariant).
-	const fitWindow = Math.min(advocate.model.contextWindow, critic.model.contextWindow);
+	const fitWindow = Math.min(advocate.contextWindow, critic.contextWindow);
 
 	function fitWithContext(extra: string): Message[] {
 		const fit = buildConsultContext({
@@ -268,7 +296,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 
 async function callStep(
 	ctx: ExtensionContext,
-	advisor: ResolvedAdvisor,
+	side: ResolvedSide,
 	systemPrompt: string,
 	messages: Message[],
 	thinkingLevel: import("@earendil-works/pi-ai").ThinkingLevel | undefined,
@@ -276,15 +304,32 @@ async function callStep(
 	sessionId: string | undefined,
 ): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
 	try {
-		const result = await callAdvisor({
-			ctx,
-			advisor,
-			systemPrompt,
-			messages,
-			thinkingLevel,
-			signal,
-			sessionId,
-		});
+		// Inline (registry model) → callAdvisor; CLI (persona.backend or legacy
+		// backends[modelKey]) → callCliAdvisor via subprocess. Mirrors the
+		// dispatch in council.ts:runMember so a debate can mix inline and CLI
+		// seats the same way a council can.
+		const result = side.kind === "cli"
+			? await callCliAdvisor({
+					systemPrompt,
+					messages,
+					backend: side.backend,
+					signal,
+					cwd: ctx.cwd,
+				}).then((cliResult) => ({
+					text: cliResult.text,
+					usage: undefined as { input: number; output: number; total: number } | undefined,
+					stopReason: cliResult.errorMessage ? "error" : "stop",
+					errorMessage: cliResult.errorMessage,
+				}))
+			: await callAdvisor({
+					ctx,
+					advisor: side.advisor,
+					systemPrompt,
+					messages,
+					thinkingLevel,
+					signal,
+					sessionId,
+				});
 		// Reject a response that arrived after the signal aborted — the timeout
 		// (or a user abort) fired while we were waiting. The response may be
 		// truncated or from a stale context. Without this check, a late success

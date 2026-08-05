@@ -46,6 +46,8 @@ Resilience — **v1**: per-member wall-clock timeout (`council.timeoutMs`, defau
 ### debate
 Sequential and adversarial. Advocate proposes → critic attacks → advocate rebuts. Rounds are configurable 1–4 (`modes.debate.rounds`), default 2. The attack step wraps the prior position in a "critically reassess, do not reflexively agree" frame so the critic genuinely stress-tests rather than rubber-stamps. For controversial calls where you want the strongest case on both sides before you decide.
 
+Advocate and critic honour the same persona-scoped CLI routing as council (§B) — each seat resolves through `resolveSide`, so inline and CLI seats can be mixed per persona via `personas.<name>.backend` or the legacy `backends[modelKey]` map. The bundled `architect` / `critic` carry no `defaultModel` and fall through to `config.modes.solo.model`; if the intended route is a CLI backend, configure it under the persona or the model key (otherwise the inline lookup misses and the debate bails with "no api key resolved" before round 1).
+
 ### gut-check
 One cheap fast model, terse output, low token budget. "Does this smell off?" Used before you do something you're 90% sure about but want a sanity check. Configured at `modes.gutCheck` (default a flash-tier model, `terse: true`).
 
