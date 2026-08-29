@@ -79,7 +79,7 @@ Because it now decides *what* to keep, it can tell you what it did. Every consul
 |---|---|---|
 | **solo** | One advisor model, one response. | Default. Fast, cheap, the second opinion you reach for most days. |
 | **council** | Several models in parallel, each with a stance (for/against/neutral) and a persona. A synthesizer merges their verdicts with a confidence score. | Real decisions. Architecture, "should I even do this," tricky bugs where one voice isn't enough. |
-| **debate** | Advocate proposes, critic attacks, advocate rebuts. Sequential rounds (1–4), then a synthesizer issues a verdict. | Controversial calls where you want the strongest case on both sides before you commit. |
+| **debate** | Advocate proposes, critic attacks, advocate rebuts. Sequential rounds (1–4), then a synthesizer issues a verdict. Advocate and critic honour persona-scoped CLI routing (council §B). | Controversial calls where you want the strongest case on both sides before you commit. |
 | **gut-check** | One cheap fast model, terse output. | The "does this smell off?" sanity check before you do something you're 90% sure about. |
 
 Call `consult()` with no args and solo runs. Pass `mode: "council"` (or `debate`, `gut-check`) to pick another.

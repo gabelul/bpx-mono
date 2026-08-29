@@ -14,10 +14,11 @@ import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from 
 import type { Message, ThinkingLevel } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
-import { callCliAdvisor, cliContextWindow, type CliBackendConfig } from "./cli-backend.js";
+import { callCliAdvisor, type CliBackendConfig } from "./cli-backend.js";
 import { withTimeout } from "./timeout.js";
 import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSummary } from "./context-engine.js";
-import { resolvePersonaBackend, type BpxConsultConfig } from "./config.js";
+import { type BpxConsultConfig } from "./config.js";
+import { resolveSide, type ResolvedSide } from "./resolve-side.js";
 import {
 	computeConfidence,
 	detectDisagreement,
@@ -68,9 +69,7 @@ export interface ExecuteCouncilInput {
  * limit, dead key) no longer collapses the whole council when a CLI seat can
  * carry a stance instead.
  */
-type ResolvedMember =
-	| { persona: Persona; kind: "inline"; advisor: ResolvedAdvisor; contextWindow: number; modelLabel: string }
-	| { persona: Persona; kind: "cli"; backend: CliBackendConfig; contextWindow: number; modelLabel: string };
+type ResolvedMember = ResolvedSide;
 
 export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentToolResult<CouncilDetails>> {
 	const { ctx, config, signal, onUpdate, question } = input;
@@ -331,11 +330,11 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 /**
  * Resolve each council persona to an inline or CLI member.
  *
- * Pure (no ctx) so the CLI-vs-inline decision + window fallback is unit-
- * testable without a live model registry. `resolveAdvisor` is injected so a
- * test can stub the registry. Members whose inline model can't resolve are
- * pre-failed (one bad model must not kill the council); CLI members never
- * pre-fail on resolution — a CLI binary isn't in the registry by design.
+ * Thin wrapper over `resolveSide` (src/resolve-side.ts) that adds council's
+ * pre-failure convention: one bad persona must not kill the council — collect
+ * failures and let the caller decide. Council's resolver exposes the raw
+ * success/failure split; debate wraps resolveSide directly and bails on any
+ * failure (sequential rounds can't tolerate a missing seat).
  */
 export function resolveCouncilMembers(
 	personas: Persona[],
@@ -345,47 +344,23 @@ export function resolveCouncilMembers(
 	const resolved: ResolvedMember[] = [];
 	const preFailed: MemberResult[] = [];
 	for (const persona of personas) {
-		const modelKey = persona.defaultModel ?? config.modes?.solo?.model;
-		// Persona-scoped backend (council §1): persona.backend takes precedence
-		// over the legacy model-key `backends` map, so two personas on the same
-		// model can route differently. Looked up from the RAW config persona
-		// (the resolved Persona carries defaultModel but not backend).
+		// Looked up from the RAW config persona — the resolved Persona carries
+		// defaultModel but not backend (council §1: persona-scoped routing).
 		const rawPersona = config.personas?.[persona.name] ?? {};
-		const backend = resolvePersonaBackend(config, { backend: rawPersona.backend, defaultModel: modelKey });
-		if (backend?.type === "cli") {
-			// Window: declared contextWindow > preset (codex/claude/opencode) >
-			// undefined. No silent 32k fallback (council §3) — an unknown custom
-			// command with no declared window pre-fails with a clear message.
-			const window = cliContextWindow(backend);
-			if (window === undefined) {
-				preFailed.push({
-					persona: persona.name,
-					stance: persona.stance,
-					model: `cli:${backend.command}`,
-					status: "error",
-					text: "",
-					errorMessage: `CLI backend "${backend.command}" for ${persona.name} has no known context window. Set "contextWindow" on the backend in config, or use a preset command (codex/claude/opencode).`,
-					alignment: 0,
-				});
-				continue;
-			}
-			resolved.push({ persona, kind: "cli", backend, contextWindow: window, modelLabel: `cli:${backend.command}` });
+		const result = resolveSide(persona, rawPersona, config, resolveAdvisor);
+		if (result.ok) {
+			resolved.push(result.side);
 			continue;
 		}
-		const advisor = resolveAdvisor(modelKey);
-		if (!advisor) {
-			preFailed.push({
-				persona: persona.name,
-				stance: persona.stance,
-				model: modelKey ?? "(none)",
-				status: "error",
-				text: "",
-				errorMessage: `Could not resolve model "${modelKey ?? "(none)"}" for persona ${persona.name}.`,
-				alignment: 0,
-			});
-			continue;
-		}
-		resolved.push({ persona, kind: "inline", advisor, contextWindow: advisor.model.contextWindow, modelLabel: advisor.label });
+		preFailed.push({
+			persona: result.persona,
+			stance: persona.stance,
+			model: result.model,
+			status: "error",
+			text: "",
+			errorMessage: result.errorMessage,
+			alignment: 0,
+		});
 	}
 	return { resolved, preFailed };
 }
