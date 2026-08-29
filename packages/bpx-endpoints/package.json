@@ -1,0 +1,52 @@
+{
+  "name": "@booplex/bpx-endpoints",
+  "version": "0.1.0",
+  "description": "Pi extension. Manage model endpoints — discovery, metadata sources, generated config, and a Pi-native TUI — through one /endpoints command.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "bpx",
+    "endpoints",
+    "models.dev"
+  ],
+  "type": "module",
+  "author": "gabelul",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gabelul/bpx-mono.git",
+    "directory": "packages/bpx-endpoints"
+  },
+  "homepage": "https://github.com/gabelul/bpx-mono/tree/main/packages/bpx-endpoints#readme",
+  "bugs": {
+    "url": "https://github.com/gabelul/bpx-mono/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@juicesharp/rpiv-config": "^1.20.0"
+  },
+  "files": [
+    "index.ts",
+    "src/",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}
