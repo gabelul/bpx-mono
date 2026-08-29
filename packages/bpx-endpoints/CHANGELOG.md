@@ -12,6 +12,13 @@
 - Manual `reasoningEfforts` per profile wins over probe results.
 - `/endpoints probe-reasoning [id]` command, `ctrl+r` probe action in the models overlay, reasoning status line in the models overlay, and reasoning probe checks in `/endpoints doctor`.
 
+## [0.2.0](https://github.com/gabelul/bpx-mono/compare/bpx-endpoints-v0.1.0...bpx-endpoints-v0.2.0) (2026-08-29)
+
+
+### Features
+
+* **bpx-endpoints:** reasoning-effort probe + safe thinking maps ([e820ba6](https://github.com/gabelul/bpx-mono/commit/e820ba62bde340d7044c9a1681f963f1979b792b))
+
 ## 0.1.0 — 2026-08-16
 
 Initial release of `@booplex/bpx-endpoints`.
