@@ -7,6 +7,7 @@
 <p align="center">
   <a href="https://github.com/gabelul/bpx-mono/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/gabelul/bpx-mono/ci.yml?branch=main&label=CI&labelColor=1a1a2e&color=a855f7" alt="CI"></a>
   <a href="https://www.npmjs.com/package/@booplex/bpx-consult"><img src="https://img.shields.io/npm/v/@booplex/bpx-consult?label=bpx-consult&color=2dd4bf&labelColor=1a1a2e&logo=npm&logoColor=white" alt="bpx-consult on npm"></a>
+  <a href="https://www.npmjs.com/package/@booplex/bpx-endpoints"><img src="https://img.shields.io/npm/v/@booplex/bpx-endpoints?label=bpx-endpoints&color=a855f7&labelColor=1a1a2e&logo=npm&logoColor=white" alt="bpx-endpoints on npm"></a>
   <img src="https://img.shields.io/badge/license-MIT-888?labelColor=1a1a2e" alt="MIT license">
   <a href="https://pi.dev"><img src="https://img.shields.io/badge/pi-0.80%2B-a855f7?labelColor=1a1a2e" alt="pi 0.80+"></a>
   <a href="https://booplex.com"><img src="https://img.shields.io/badge/website-booplex.com-2dd4bf?labelColor=1a1a2e" alt="Booplex — booplex.com"></a>
@@ -19,6 +20,7 @@ Small, sharp extensions for [pi](https://pi.dev), the minimal terminal coding ha
 | Extension | What it does | Install |
 |---|---|---|
 | **[@booplex/bpx-consult](packages/bpx-consult/)**<br>a council of AI advisors | Run a cheap, fast model as your working agent and keep a stronger one on the bench to steer it — a solo second opinion, a full council, or two models debating the hard calls. Senior judgment on tap, paid for only when it counts.<br>[README](packages/bpx-consult/README.md) · [SPEC](packages/bpx-consult/SPEC.md) | `pi install npm:@booplex/bpx-consult` |
+| **[@booplex/bpx-endpoints](packages/bpx-endpoints/)**<br>every model endpoint, one command | Manage model endpoints — OpenAI-compatible proxies, self-hosted boxes, regional gateways — through a single `/endpoints` command: discovery, models.dev metadata, generated config, and a Pi-native TUI.<br>[README](packages/bpx-endpoints/README.md) | `pi install npm:@booplex/bpx-endpoints` |
 
 More on the way — the house is built to hold them.
 

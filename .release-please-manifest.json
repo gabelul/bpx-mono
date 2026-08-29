@@ -1,3 +1,4 @@
 {
-  "packages/bpx-consult": "0.10.2"
+  "packages/bpx-consult": "0.10.2",
+  "packages/bpx-endpoints": "0.1.0"
 }
