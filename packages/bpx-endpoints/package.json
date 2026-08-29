@@ -1,6 +1,6 @@
 {
   "name": "@booplex/bpx-endpoints",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi extension. Manage model endpoints — discovery, metadata sources, generated config, and a Pi-native TUI — through one /endpoints command.",
   "keywords": [
     "pi-package",
