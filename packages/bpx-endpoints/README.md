@@ -1,6 +1,10 @@
 # bpx-endpoints — every model endpoint, one command | pi extension
 
 <p align="center">
+  <img src="https://raw.githubusercontent.com/gabelul/bpx-mono/main/packages/bpx-endpoints/.github/assets/hero.png" alt="A small clay robot at a workshop desk, plugged by a thick braided cable into a patch panel of colorful endpoint cables and three tiny homelab machines" width="100%">
+</p>
+
+<p align="center">
   <a href="https://www.npmjs.com/package/@booplex/bpx-endpoints"><img src="https://img.shields.io/npm/v/@booplex/bpx-endpoints?color=a855f7&labelColor=1a1a2e&logo=npm&logoColor=white" alt="npm version"></a>
   <a href="https://www.npmjs.com/package/@booplex/bpx-endpoints"><img src="https://img.shields.io/npm/dm/@booplex/bpx-endpoints?color=2dd4bf&labelColor=1a1a2e" alt="npm downloads"></a>
   <a href="https://github.com/gabelul/bpx-mono/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/gabelul/bpx-mono/ci.yml?branch=main&label=CI&labelColor=1a1a2e&color=a855f7" alt="CI"></a>
