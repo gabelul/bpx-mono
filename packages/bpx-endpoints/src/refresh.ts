@@ -20,20 +20,44 @@ export class ProbeWorthyError extends Error {}
 
 export async function resolveApiKey(apiKey: string | undefined, profileId: string): Promise<string | undefined> {
   if (apiKey === undefined) return undefined;
-  if (apiKey.startsWith("${") && apiKey.endsWith("}")) {
-    const varName = apiKey.slice(2, -1).trim();
-    const value = process.env[varName];
-    if (!value) throw new Error(`Profile ${profileId}: environment variable ${varName} referenced by apiKey is not set or empty`);
-    return value;
+  return resolveValueReference(apiKey, profileId, "apiKey");
+}
+
+/**
+ * Resolve a profile's baseUrl reference. "!command" (whole value) runs a shell
+ * command; everywhere else "$VAR" and "${VAR}" tokens expand from the
+ * environment, including mid-URL forms like http://$HOST:8080/v1. An unset
+ * variable is a hard error — failing fast beats sending a broken URL to DNS.
+ * Expansion happens at use time: config files keep the reference, and env
+ * changes apply on the next session without rewriting the config.
+ */
+export async function resolveProfileBaseUrl(profile: { id: string; baseUrl: string }): Promise<string> {
+  const value = profile.baseUrl;
+  if (value.startsWith("!")) return resolveValueReference(value, profile.id, "baseUrl");
+  if (!value.includes("$")) return value;
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced: string | undefined, plain: string | undefined) => {
+    const varName = braced ?? plain!;
+    const resolved = process.env[varName];
+    if (!resolved) throw new Error(`Profile ${profile.id}: environment variable ${varName} referenced by baseUrl is not set or empty`);
+    return resolved;
+  });
+}
+
+async function resolveValueReference(value: string, profileId: string, field: string): Promise<string> {
+  if (value.startsWith("${") && value.endsWith("}")) {
+    const varName = value.slice(2, -1).trim();
+    const resolved = process.env[varName];
+    if (!resolved) throw new Error(`Profile ${profileId}: environment variable ${varName} referenced by ${field} is not set or empty`);
+    return resolved;
   }
-  if (apiKey.startsWith("$")) {
-    const varName = apiKey.slice(1).trim();
-    const value = process.env[varName];
-    if (!value) throw new Error(`Profile ${profileId}: environment variable ${varName} referenced by apiKey is not set or empty`);
-    return value;
+  if (value.startsWith("$")) {
+    const varName = value.slice(1).trim();
+    const resolved = process.env[varName];
+    if (!resolved) throw new Error(`Profile ${profileId}: environment variable ${varName} referenced by ${field} is not set or empty`);
+    return resolved;
   }
-  if (apiKey.startsWith("!")) {
-    const command = apiKey.slice(1).trim();
+  if (value.startsWith("!")) {
+    const command = value.slice(1).trim();
     try {
       const { stdout } = await execAsync(command, { encoding: "utf8", timeout: 10_000 });
       const result = stdout.trim();
@@ -44,7 +68,7 @@ export async function resolveApiKey(apiKey: string | undefined, profileId: strin
       throw new Error(`Profile ${profileId}: command ${command} failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return apiKey;
+  return value;
 }
 
 /**
@@ -77,11 +101,12 @@ export function discoveryUrls(profile: EndpointProfile, hintUrl?: string): strin
 }
 
 export async function discoverEndpointModels(profile: EndpointProfile, fetcher: Fetcher = fetch, hintUrl?: string): Promise<EndpointDiscoveryResult> {
-  const urls = discoveryUrls(profile, hintUrl);
+  const resolved = { ...profile, baseUrl: await resolveProfileBaseUrl(profile) };
+  const urls = discoveryUrls(resolved, hintUrl);
   let lastError: unknown;
   for (const url of urls) {
     try {
-      const discovered = await discoverFromUrl(profile, url, fetcher);
+      const discovered = await discoverFromUrl(resolved, url, fetcher);
       if (discovered.models.length === 0 && urls.length > 1) {
         lastError = new Error(`Endpoint model discovery found no models at ${url}`);
         continue;
@@ -228,7 +253,7 @@ export async function probeReasoningEfforts(input: {
 }): Promise<ReasoningProbeResult> {
   const values = [...(input.values ?? PROBE_EFFORT_VALUES)];
   const fetcher = input.fetcher ?? fetch;
-  const url = chatCompletionsUrl(input.profile.baseUrl);
+  const url = chatCompletionsUrl(await resolveProfileBaseUrl(input.profile));
   const headers = await probeHeaders(input.profile);
   const timeoutMs = input.timeoutMs ?? PROBE_REASONING_TIMEOUT_MS;
   const accepted: string[] = [];

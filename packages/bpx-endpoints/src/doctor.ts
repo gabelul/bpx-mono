@@ -34,6 +34,15 @@ export function buildDoctorReport(input: {
         });
       }
       const cachedProfile = input.cache?.value?.profiles[profile.id];
+      const hasAuthHeader = Object.keys(profile.headers ?? {}).some((key) => key.toLowerCase() === "authorization");
+      if (profile.apiKey && hasAuthHeader) {
+        pushIssue(issues, {
+          level: "warning",
+          code: "auth_conflict",
+          profileId: profile.id,
+          message: `Profile ${profile.id} sets both apiKey and a custom Authorization header. Pi appends the bearer token from apiKey last, so it overwrites the custom header. Keep only one of the two.`,
+        });
+      }
       if (!cachedProfile) pushIssue(issues, { level: "warning", code: "profile_not_refreshed", profileId: profile.id, message: `Profile ${profile.id} has no discovery cache. Run /endpoints refresh ${profile.id}.` });
       if (cachedProfile) {
         const ageDays = Math.floor((now.getTime() - new Date(cachedProfile.refreshedAt).getTime()) / (24 * 60 * 60 * 1000));

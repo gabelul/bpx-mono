@@ -1,5 +1,5 @@
 import type { Api, AssistantMessageEvent, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { apiKeySourceDescription, resolveApiKey } from "./refresh.js";
+import { apiKeySourceDescription, resolveApiKey, resolveProfileBaseUrl } from "./refresh.js";
 import { KNOWN_APIS, type CachedProfile, type KnownApi, type EndpointProfile, type TestMessageResult } from "./types.js";
 
 type TestStreamFunction = (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AsyncIterable<AssistantMessageEvent>;
@@ -42,7 +42,7 @@ export async function confirmAndTestProfileModel(input: {
     const apiKey = (await resolveApiKey(input.profile.apiKey, input.profile.id)) ?? "unused";
     const headers = await resolveProfileHeaders(input.profile);
     const stream = await (input.streamLoader ?? loadStreamSimple)(input.profile.api);
-    const model = input.model ?? buildTestModel(input.profile, input.cachedModel);
+    const model = input.model ?? (await buildTestModel(input.profile, input.cachedModel));
     const context: Context = {
       messages: [{ role: "user", content: TEST_MESSAGE_PROMPT, timestamp: Date.now() }],
     };
@@ -73,7 +73,7 @@ export async function confirmAndTestProfileModel(input: {
   }
 }
 
-function buildTestModel(profile: EndpointProfile, cachedModel: CachedProfile["models"][string]): Model<Api> {
+async function buildTestModel(profile: EndpointProfile, cachedModel: CachedProfile["models"][string]): Promise<Model<Api>> {
   const selectedSource = profile.parameterSourceSelections?.[cachedModel.id];
   const candidate = selectedSource
     ? cachedModel.candidates.find((item) => item.sourceId === selectedSource)
@@ -85,7 +85,7 @@ function buildTestModel(profile: EndpointProfile, cachedModel: CachedProfile["mo
     name: cachedModel.name ?? candidate.model.name,
     api: profile.api as KnownApi,
     provider: profile.id,
-    baseUrl: profile.baseUrl,
+    baseUrl: await resolveProfileBaseUrl(profile),
   };
 }
 

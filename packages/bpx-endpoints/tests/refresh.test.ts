@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { discoveryUrls, fetchWithRetry, parseEndpointModels, ProbeWorthyError, discoverEndpointModels } from "../src/refresh.js";
+import { discoveryUrls, fetchWithRetry, parseEndpointModels, ProbeWorthyError, discoverEndpointModels, resolveProfileBaseUrl } from "../src/refresh.js";
 import type { EndpointProfile } from "../src/types.js";
 
 function profile(overrides: Partial<EndpointProfile> = {}): EndpointProfile {
@@ -245,5 +245,38 @@ describe("fetchWithRetry", () => {
     };
     await expect(fetchWithRetry({ fetcher, url: "https://x.test" })).rejects.toThrow("aborted");
     expect(calls).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveProfileBaseUrl — $ENV / !command expansion at use time
+// ---------------------------------------------------------------------------
+describe("resolveProfileBaseUrl", () => {
+  it("passes plain URLs through untouched, including $ that is not a variable reference", async () => {
+    const plain = await resolveProfileBaseUrl({ id: "p", baseUrl: "http://localhost:1234/v1" });
+    expect(plain).toBe("http://localhost:1234/v1");
+    const literal = await resolveProfileBaseUrl({ id: "p", baseUrl: "http://host/path?price=$5" });
+    expect(literal).toBe("http://host/path?price=$5");
+  });
+
+  it("expands $VAR and ${VAR} mid-URL from the environment", async () => {
+    process.env.BPX_TEST_HOST = "10.0.0.7:8080";
+    try {
+      expect(await resolveProfileBaseUrl({ id: "p", baseUrl: "http://$BPX_TEST_HOST/v1" })).toBe("http://10.0.0.7:8080/v1");
+      expect(await resolveProfileBaseUrl({ id: "p", baseUrl: "http://${BPX_TEST_HOST}/v1" })).toBe("http://10.0.0.7:8080/v1");
+      expect(await resolveProfileBaseUrl({ id: "p", baseUrl: "$BPX_TEST_HOST" })).toBe("10.0.0.7:8080");
+    } finally {
+      delete process.env.BPX_TEST_HOST;
+    }
+  });
+
+  it("throws a profile-scoped error when the referenced variable is unset", async () => {
+    delete process.env.BPX_TEST_MISSING;
+    await expect(resolveProfileBaseUrl({ id: "p", baseUrl: "http://$BPX_TEST_MISSING/v1" })).rejects.toThrow(/BPX_TEST_MISSING referenced by baseUrl/);
+  });
+
+  it("expands !command references", async () => {
+    const url = await resolveProfileBaseUrl({ id: "p", baseUrl: "!echo http://from-command:9000" });
+    expect(url).toBe("http://from-command:9000");
   });
 });

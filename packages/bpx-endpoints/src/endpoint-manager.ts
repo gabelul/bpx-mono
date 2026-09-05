@@ -1,6 +1,6 @@
 import { Input, Key, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
 import { normalizeProfile } from "./config.js";
-import { ModelManagerOverlay, plainOverlayTheme, type ModelOverlayChanges, type ModelOverlayState, type OverlayTheme } from "./tui.js";
+import { ModelManagerOverlay, boxBottom, boxTop, frameLine, plainOverlayTheme, type ModelOverlayChanges, type ModelOverlayState, type OverlayTheme } from "./tui.js";
 import type {
   EndpointDiscoveryResult,
   ManagedConfig,
@@ -181,10 +181,11 @@ export class EndpointManagerSessionOverlay implements Component, Focusable {
 
   private renderList(width: number): string[] {
     const t = this.theme();
-    const inner = Math.max(20, width - 2);
+    const inner = Math.max(20, width - 4);
     const profiles = Object.values(this.data.config.profiles);
     this.listSelected = clampIndex(this.listSelected, profiles.length);
-    const lines = [hr(width, t), padLine(titleWithHint(t.accent(t.bold("Endpoints")), t.muted(`${profiles.length} profile${profiles.length === 1 ? "" : "s"}`), inner), width), padLine("", width)];
+    const lines = [padLine(titleWithHint(t.accent(t.bold("Endpoints")), t.muted(`${profiles.length} profile${profiles.length === 1 ? "" : "s"}`), inner), width), padLine("", width)];
+    let selectedRowLine = -1;
 
     if (profiles.length === 0) {
       lines.push(padLine(t.muted("No Endpoints yet."), width));
@@ -204,26 +205,32 @@ export class EndpointManagerSessionOverlay implements Component, Focusable {
         const detail = `${profile.id} · ${profile.api} · ${endpoint} · ${cache ? `${Object.keys(cache.models).length} models` : "no cache"} · ${status}`;
         lines.push(padLine(`${marker}${selected ? t.accent(primary) : primary}`, width));
         lines.push(padLine(`    ${t.muted(detail)}`, width));
+        if (selected) selectedRowLine = lines.length - 2;
       }
     }
 
     lines.push(padLine("", width));
     if (this.notice) lines.push(padLine(noticeColor(t, this.notice.type)(this.notice.message), width));
     lines.push(padLine(t.dim("enter models · a add · e edit · r refresh · t test · y clone · x delete · c overrides · esc close"), width));
-    lines.push(hr(width, t));
-    return lines.map((line) => truncateToWidth(line, width));
+    return [
+      boxTop(width, t),
+      ...lines.map((line, lineIndex) => frameLine(line, width, t, lineIndex === selectedRowLine ? t.selectionBg : t.panelBg)),
+      boxBottom(width, t),
+    ];
   }
 
   private renderForm(width: number): string[] {
     const t = this.theme();
-    const inner = Math.max(20, width - 2);
+    const inner = Math.max(20, width - 4);
     const title = this.formMode === "add" ? "Add Endpoint" : `Edit Endpoint · ${this.draft.originalId}`;
-    const lines = [hr(width, t), padLine(t.accent(t.bold(title)), width), padLine(t.muted("Choose the Pi API protocol explicitly. The extension never infers it from the URL."), width), padLine("", width)];
+    const lines = [padLine(t.accent(t.bold(title)), width), padLine(t.muted("Choose the Pi API protocol explicitly. The extension never infers it from the URL."), width), padLine("", width)];
 
     if (this.formSubView !== "fields") return this.renderOptions(width);
 
     const visibleFields = this.visibleFormFields();
     this.formSelected = clampIndex(this.formSelected, visibleFields.length);
+    let selectedFieldLine = -1;
+    let selectedDescLine = -1;
     for (let index = 0; index < visibleFields.length; index += 1) {
       const field = visibleFields[index]!;
       const selected = index === this.formSelected;
@@ -237,7 +244,11 @@ export class EndpointManagerSessionOverlay implements Component, Focusable {
         value = this.displayFieldValue(field);
       }
       lines.push(padLine(`${marker}${selected ? t.accent(label) : label}${value}`, width));
-      if (selected) lines.push(padLine(`    ${t.dim(fieldDescription(field))}`, width));
+      if (selected) {
+        selectedFieldLine = lines.length - 1;
+        lines.push(padLine(`    ${t.dim(fieldDescription(field))}`, width));
+        selectedDescLine = lines.length - 1;
+      }
     }
 
     lines.push(padLine("", width));
@@ -249,8 +260,11 @@ export class EndpointManagerSessionOverlay implements Component, Focusable {
       lines.push(padLine(t.muted(this.draft.discoveryMode === "manual" ? "Manual discovery will be validated on save." : "Connection not tested."), width));
     }
     lines.push(padLine(t.dim(this.editingField ? "enter apply · esc cancel edit" : "enter edit/select · ctrl+t test connection · ctrl+s save · esc back"), width));
-    lines.push(hr(width, t));
-    return lines.map((line) => truncateToWidth(line, width));
+    return [
+      boxTop(width, t),
+      ...lines.map((line, lineIndex) => frameLine(line, width, t, lineIndex === selectedFieldLine || lineIndex === selectedDescLine ? t.selectionBg : t.panelBg)),
+      boxBottom(width, t),
+    ];
   }
 
   private renderOptions(width: number): string[] {
@@ -258,17 +272,21 @@ export class EndpointManagerSessionOverlay implements Component, Focusable {
     const options = this.formOptionRows();
     const lines: string[] = [];
     this.optionSelected = clampIndex(this.optionSelected, options.length);
-    lines.push(hr(width, t));
     lines.push(padLine(t.accent(t.bold(optionTitle(this.formSubView))), width));
     lines.push(padLine("", width));
+    let selectedOptionLine = -1;
     for (let index = 0; index < options.length; index += 1) {
       const selected = index === this.optionSelected;
       lines.push(padLine(`${selected ? t.accent("→ ") : "  "}${selected ? t.accent(options[index]!) : options[index]!}`, width));
+      if (selected) selectedOptionLine = lines.length - 1;
     }
     lines.push(padLine("", width));
     lines.push(padLine(t.dim("enter select · esc back"), width));
-    lines.push(hr(width, t));
-    return lines.map((line) => truncateToWidth(line, width));
+    return [
+      boxTop(width, t),
+      ...lines.map((line, lineIndex) => frameLine(line, width, t, lineIndex === selectedOptionLine ? t.selectionBg : t.panelBg)),
+      boxBottom(width, t),
+    ];
   }
 
   private renderCompletion(width: number): string[] {
@@ -278,18 +296,20 @@ export class EndpointManagerSessionOverlay implements Component, Focusable {
     const profile = this.data.config.profiles[completion.profileId];
     if (!profile) throw new Error(`Saved profile ${completion.profileId} is missing`);
     return [
-      hr(width, t),
-      padLine(t.success(t.bold("Endpoint Added")), width),
-      padLine("", width),
-      padLine(profile.name, width),
-      padLine(t.muted(profile.id), width),
-      padLine("", width),
-      padLine(t.success(`${completion.modelCount} model${completion.modelCount === 1 ? "" : "s"} available`), width),
-      padLine(t.muted("Registered in the current Pi session."), width),
-      padLine("", width),
-      padLine(t.dim("enter manage models · t send test message · esc done"), width),
-      hr(width, t),
-    ].map((line) => truncateToWidth(line, width));
+      boxTop(width, t),
+      ...[
+        padLine(t.success(t.bold("Endpoint Added")), width),
+        padLine("", width),
+        padLine(profile.name, width),
+        padLine(t.muted(profile.id), width),
+        padLine("", width),
+        padLine(t.success(`${completion.modelCount} model${completion.modelCount === 1 ? "" : "s"} available`), width),
+        padLine(t.muted("Registered in the current Pi session."), width),
+        padLine("", width),
+        padLine(t.dim("enter manage models · t send test message · esc done"), width),
+      ].map((line) => frameLine(line, width, t)),
+      boxBottom(width, t),
+    ];
   }
 
   private handleListInput(data: string): void {
@@ -861,12 +881,10 @@ function visibleWindow(total: number, selected: number, maxRows: number): { star
   return { start, end: Math.min(total, start + maxRows) };
 }
 
-function hr(width: number, t: OverlayTheme): string {
-  return t.border("─".repeat(Math.max(0, width)));
-}
-
 function padLine(content: string, width: number): string {
-  const inner = Math.max(0, width - 2);
+  // width - 4: frameLine wraps these lines in "│ " and " ", so the content
+  // area must leave one space of padding inside each border.
+  const inner = Math.max(0, width - 4);
   const clipped = truncateToWidth(content.replace(/[\r\n]+/g, " "), inner);
   return ` ${clipped}${" ".repeat(Math.max(0, inner - visibleWidth(clipped)))} `;
 }

@@ -25,7 +25,7 @@ import {
 } from "./io.js";
 import { mergeModelsConfig } from "./merge.js";
 import { fetchModelsDevCatalogCached } from "./models-dev.js";
-import { discoverEndpointModels, probeReasoningEfforts, refreshProfileCache } from "./refresh.js";
+import { discoverEndpointModels, probeReasoningEfforts, refreshProfileCache, resolveProfileBaseUrl } from "./refresh.js";
 import { filterRuntimeProviderModels, getRuntimeCapabilities } from "./runtime.js";
 import { confirmAndTestProfileModel } from "./test-message.js";
 import { maskEffectiveConfig, maskSecret } from "./redact.js";
@@ -48,13 +48,24 @@ interface LoadedState {
   staleProfileReminderCount: number;
 }
 
+/**
+ * Expand a $ENV / !command baseUrl reference in a provider config before
+ * registration. Config files keep the raw reference (no resolved secrets on
+ * disk); only the runtime registration sees the resolved value. Plain URLs
+ * pass through untouched.
+ */
+async function resolveProviderBaseUrl(providerId: string, config: ProviderConfig): Promise<ProviderConfig> {
+  if (typeof config.baseUrl !== "string") return config;
+  return { ...config, baseUrl: await resolveProfileBaseUrl({ id: providerId, baseUrl: config.baseUrl }) };
+}
+
 export async function registerGeneratedProviders(pi: ExtensionAPI): Promise<LoadedState> {
   const paths = getConfigPaths();
   const state = await loadState(paths);
   if (state.generated.value) {
     const effective = mergeModelsConfig(state.generated.value, state.custom.value);
     for (const [providerId, providerConfig] of Object.entries(effective.providers)) {
-      pi.registerProvider(providerId, providerConfig as ProviderConfig);
+      pi.registerProvider(providerId, await resolveProviderBaseUrl(providerId, providerConfig as ProviderConfig));
     }
   }
   return {
@@ -120,6 +131,16 @@ async function openEndpointManager(pi: ExtensionAPI, ctx: ExtensionCommandContex
   const data = await loadEndpointManagerData(ctx);
   if (!data) return;
   const operations = endpointManagerOperations(pi, ctx);
+  // Overlay mode is required here, not a stylistic pick: the manager nests pi
+  // dialogs (delete confirm, clone input, overrides editor, model-field
+  // prompts), and a docked (non-overlay) ctx.ui.custom component gets evicted
+  // from the editor slot the moment one opens — hideExtensionSelector()
+  // restores the default editor, orphaning the manager. Overlays keep input
+  // ownership across temporary dialogs and reclaim it afterwards. Width is
+  // capped (not percentage-wide) so it reads as a centered dialog on big
+  // monitors, and the component draws a real ┌─┐ frame painted with the
+  // theme's customMessageBg (hermes skills-manager style) so the panel reads
+  // as a solid card against the chat behind it.
   await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
     return new EndpointManagerSessionOverlay({
       tui,
@@ -129,7 +150,7 @@ async function openEndpointManager(pi: ExtensionAPI, ctx: ExtensionCommandContex
       initialView,
       theme: overlayThemeFromPi(theme),
     });
-  }, { overlay: true, overlayOptions: centeredOverlayOptions(110, 80) });
+  }, { overlay: true, overlayOptions: centeredOverlayOptions(104, 80) });
 }
 
 async function loadEndpointManagerData(ctx: ExtensionCommandContext): Promise<EndpointManagerData | undefined> {
@@ -684,7 +705,7 @@ async function registerEffectiveProviders(pi: ExtensionAPI, generated: ModelsCon
   const custom = await loadModelsConfig(paths.custom);
   const effective = mergeModelsConfig(generated, custom.value);
   for (const [providerId, providerConfig] of Object.entries(effective.providers)) {
-    pi.registerProvider(providerId, providerConfig as ProviderConfig);
+    pi.registerProvider(providerId, await resolveProviderBaseUrl(providerId, providerConfig as ProviderConfig));
   }
   for (const providerId of Object.keys(previousGenerated?.providers ?? {})) {
     if (!effective.providers[providerId]) pi.unregisterProvider(providerId);

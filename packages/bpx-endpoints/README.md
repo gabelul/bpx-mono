@@ -58,7 +58,7 @@ Each endpoint maps to exactly one `pi.registerProvider()` call. Once saved, the 
 ## Commands
 
 ```text
-/endpoints                 Open the Endpoint Manager overlay
+/endpoints                 Open the Endpoint Manager
 /endpoints add             Add an endpoint through interactive prompts
 /endpoints settings        Edit extension settings (same picker as /consult)
 /endpoints status          Print a config / cache / generated read-out
@@ -73,7 +73,7 @@ Each endpoint maps to exactly one `pi.registerProvider()` call. Once saved, the 
 /endpoints open            Show the config file + state directory paths
 ```
 
-The overlay is the primary interface; the subcommands are shortcuts for scripting and recovery. Add, edit, refresh, model management, and completion all happen inside one overlay session — no dialog teardown, no flicker. From the overlay you can also check endpoint status, clone (`y`), delete, send an explicit test message, and reach the advanced override layer. Test messages stream through the endpoint's real protocol (the exact registered model, including `models.custom.json` overrides), time out after 30s, and record latency + failure history that `/endpoints doctor` and `/endpoints status` surface.
+The overlay is the primary interface; the subcommands are shortcuts for scripting and recovery. Add, edit, refresh, model management, and completion all happen inside one overlay session — no dialog teardown, no flicker. It floats centered at 92% of your terminal width, so the form and model tables keep their columns on narrow screens too. From the overlay you can also check endpoint status, clone (`y`), delete, send an explicit test message, and reach the advanced override layer. Test messages stream through the endpoint's real protocol (the exact registered model, including `models.custom.json` overrides), time out after 30s, and record latency + failure history that `/endpoints doctor` and `/endpoints status` surface.
 
 ## Model discovery and metadata
 
@@ -109,6 +109,14 @@ For endpoints that don't use the default `Authorization: Bearer <apiKey>` style,
   }
 }
 ```
+
+## Base URL references
+
+`baseUrl` also supports value references, expanded at use time — config files keep the reference, so nothing resolved lands on disk and env changes apply on the next session:
+
+- `$VAR` and `${VAR}` expand from the environment, including mid-URL: `"baseUrl": "http://${MY_HOST}:8080/v1"`. An unset variable is a hard error at discovery/test/registration time (failing fast beats sending a broken URL to DNS).
+- `!command` (whole value only) runs a shell command and uses its trimmed stdout: `"baseUrl": "!~/bin/tunnel-url.sh"`.
+- Plain URLs pass through untouched, including `$` that isn't a variable name (`?price=$5`).
 
 ## Configuration
 

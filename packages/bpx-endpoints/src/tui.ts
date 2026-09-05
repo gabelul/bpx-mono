@@ -14,6 +14,10 @@ export interface OverlayTheme {
   warning(text: string): string;
   error(text: string): string;
   bold(text: string): string;
+  /** Background fill for the floating panel body (Pi: customMessageBg). */
+  panelBg(text: string): string;
+  /** Background fill for the highlighted row (Pi: selectedBg). */
+  selectionBg(text: string): string;
 }
 
 export const plainOverlayTheme: OverlayTheme = {
@@ -25,11 +29,19 @@ export const plainOverlayTheme: OverlayTheme = {
   warning: (text) => text,
   error: (text) => text,
   bold: (text) => text,
+  panelBg: (text) => text,
+  selectionBg: (text) => text,
 };
 
 type PiThemeColor = "accent" | "border" | "muted" | "dim" | "success" | "warning" | "error";
+type PiThemeBg = "customMessageBg" | "selectedBg";
 
-export function overlayThemeFromPi(theme: { fg(color: PiThemeColor, text: string): string; bold(text: string): string }): OverlayTheme {
+export function overlayThemeFromPi(theme: {
+  fg(color: PiThemeColor, text: string): string;
+  bold(text: string): string;
+  bg?(color: PiThemeBg, text: string): string;
+}): OverlayTheme {
+  const bg = typeof theme.bg === "function" ? theme.bg.bind(theme) : undefined;
   return {
     accent: (text) => theme.fg("accent", text),
     border: (text) => theme.fg("border", text),
@@ -39,6 +51,10 @@ export function overlayThemeFromPi(theme: { fg(color: PiThemeColor, text: string
     warning: (text) => theme.fg("warning", text),
     error: (text) => theme.fg("error", text),
     bold: (text) => theme.bold(text),
+    // Pi's Theme.bg resets only the background (49m) and fg styles reset only
+    // the foreground (39m), so wrapping whole lines composes cleanly.
+    panelBg: bg ? (text) => bg("customMessageBg", text) : (text) => text,
+    selectionBg: bg ? (text) => bg("selectedBg", text) : (text) => text,
   };
 }
 
@@ -80,7 +96,6 @@ export class DoctorReportOverlay implements Component {
     this.scroll = Math.max(0, Math.min(this.scroll, Math.max(0, issues.length - maxRows)));
     const visible = issues.slice(this.scroll, this.scroll + maxRows);
     const lines: string[] = [];
-    lines.push(hr(width, t));
     lines.push(padLine(t.accent(t.bold("Doctor Report")), width));
     lines.push(padLine(t.muted(this.report.configDir), width));
     lines.push(padLine("", width));
@@ -91,8 +106,7 @@ export class DoctorReportOverlay implements Component {
     const scroll = scrollInfo(issues.length, this.scroll, this.scroll + visible.length);
     lines.push(padLine("", width));
     lines.push(padLine(t.dim(scroll ? `${scroll} · ↑↓ scroll · esc close` : "↑↓ scroll · esc close"), width));
-    lines.push(hr(width, t));
-    return lines.map((line) => truncateToWidth(line, width));
+    return [boxTop(width, t), ...lines.map((line) => frameLine(line, width, t)), boxBottom(width, t)];
   }
 
   handleInput(data: string): void {
@@ -123,15 +137,13 @@ export class ReadOnlyTextOverlay implements Component {
     this.scroll = Math.max(0, Math.min(this.scroll, Math.max(0, this.lines.length - maxRows)));
     const visible = this.lines.slice(this.scroll, this.scroll + maxRows);
     const output: string[] = [];
-    output.push(hr(width, t));
     output.push(padLine(t.accent(t.bold(this.title)), width));
     output.push(padLine("", width));
     for (const line of visible) output.push(padLine(line, width));
     const scroll = scrollInfo(this.lines.length, this.scroll, this.scroll + visible.length);
     output.push(padLine("", width));
     output.push(padLine(t.dim(scroll ? `${scroll} · ↑↓ scroll · esc close` : "↑↓ scroll · esc close"), width));
-    output.push(hr(width, t));
-    return output.map((line) => truncateToWidth(line, width));
+    return [boxTop(width, t), ...output.map((line) => frameLine(line, width, t)), boxBottom(width, t)];
   }
 
   handleInput(data: string): void {
@@ -194,14 +206,13 @@ export class ModelManagerOverlay implements Component {
 
   private renderListView(width: number): string[] {
     const t = this.input.theme ?? plainOverlayTheme;
-    const inner = Math.max(20, width - 2);
+    const inner = Math.max(20, width - 4);
     const models = this.filteredModels();
     this.clampSelected(models.length);
     const allModels = Object.values(this.input.cache.models);
     const included = allModels.filter((model) => this.isIncluded(model.id)).length;
 
     const lines: string[] = [];
-    lines.push(hr(width, t));
     const title = t.accent(t.bold(`Models · ${this.input.profile.id}`));
     const dirtyHint = this.dirty ? t.warning("● unsaved — ctrl+s to save") : "";
     lines.push(padLine(titleWithHint(title, dirtyHint, inner), width));
@@ -215,6 +226,7 @@ export class ModelManagerOverlay implements Component {
     const { start, end } = visibleWindow(models.length, this.selected, maxRows);
     const idWidth = Math.max(14, Math.min(34, Math.floor((inner - 20) * 0.42)));
     const sourceWidth = Math.max(12, inner - 4 - idWidth - 1 - 12 - 2);
+    let selectedRowLine = -1;
     for (let index = start; index < end; index += 1) {
       const model = models[index]!;
       const isSelected = index === this.selected;
@@ -231,6 +243,7 @@ export class ModelManagerOverlay implements Component {
         matchColor(t, match)(fitCell(match, 10)),
       ];
       lines.push(padLine(`${marker}${inc}${cells.join(" ")}`, width));
+      if (isSelected) selectedRowLine = lines.length - 1;
     }
     if (models.length === 0) lines.push(padLine(t.muted("No models match the current filter/search."), width));
     const scroll = scrollInfo(models.length, start, end);
@@ -248,8 +261,11 @@ export class ModelManagerOverlay implements Component {
     for (const hintLine of flowHints(hintParts, inner)) {
       lines.push(padLine(t.dim(hintLine), width));
     }
-    lines.push(hr(width, t));
-    return lines.map((line) => truncateToWidth(line, width));
+    return [
+      boxTop(width, t),
+      ...lines.map((line, lineIndex) => frameLine(line, width, t, lineIndex === selectedRowLine ? t.selectionBg : t.panelBg)),
+      boxBottom(width, t),
+    ];
   }
 
   /** One-line reasoning_effort status: manual override, probe outcome, or pending. */
@@ -272,7 +288,7 @@ export class ModelManagerOverlay implements Component {
 
   private renderSourceView(width: number): string[] {
     const t = this.input.theme ?? plainOverlayTheme;
-    const inner = Math.max(20, width - 2);
+    const inner = Math.max(20, width - 4);
     const model = this.filteredModels()[this.selected];
     const candidates = model?.candidates ?? [];
     const sourceRows = ["(auto)", ...candidates.map((candidate) => candidate.sourceId)];
@@ -280,7 +296,6 @@ export class ModelManagerOverlay implements Component {
     const currentSourceId = model ? this.resolveSourceId(model.id) : undefined;
 
     const lines: string[] = [];
-    lines.push(hr(width, t));
     lines.push(padLine(t.accent(t.bold(`Parameter Source · ${model?.id ?? ""}`)), width));
     lines.push(padLine(t.muted("choose where this model's parameters come from"), width));
     lines.push(padLine(t.muted("exact = same id · normalized = id variant · fuzzy = similar id — verify before trusting"), width));
@@ -290,6 +305,7 @@ export class ModelManagerOverlay implements Component {
     const { start, end } = visibleWindow(sourceRows.length, this.sourceSelected, maxRows);
     const infoWidth = 26;
     const sourceWidth = Math.max(16, inner - 2 - 1 - 10 - 1 - infoWidth - 1 - 9);
+    let selectedRowLine = -1;
     for (let index = start; index < end; index += 1) {
       const candidate = index === 0 ? undefined : candidates[index - 1]!;
       const isSelected = index === this.sourceSelected;
@@ -302,13 +318,17 @@ export class ModelManagerOverlay implements Component {
         (candidate ? candidate.sourceId === currentSourceId : !currentSourceId) ? t.muted("(current)") : "         ",
       ];
       lines.push(padLine(`${marker}${cells.join(" ")}`, width));
+      if (isSelected) selectedRowLine = lines.length - 1;
     }
     const scroll = scrollInfo(sourceRows.length, start, end);
     if (scroll) lines.push(padLine(t.muted(`  ${scroll}`), width));
     lines.push(padLine("", width));
     lines.push(padLine(t.dim("enter select · esc back"), width));
-    lines.push(hr(width, t));
-    return lines.map((line) => truncateToWidth(line, width));
+    return [
+      boxTop(width, t),
+      ...lines.map((line, lineIndex) => frameLine(line, width, t, lineIndex === selectedRowLine ? t.selectionBg : t.panelBg)),
+      boxBottom(width, t),
+    ];
   }
 
   handleInput(data: string): void {
@@ -532,13 +552,32 @@ function isConfirm(data: string, input: ListNavigationInput): boolean {
   return input.keybindings?.matches(data, "tui.select.confirm") ?? (data === "\r" || data === "\n");
 }
 
-function hr(width: number, t: OverlayTheme): string {
-  return t.border("─".repeat(Math.max(0, width)));
+/** ┌───┐ top edge of a boxed overlay panel, filled with the panel background. */
+export function boxTop(width: number, t: OverlayTheme): string {
+  return t.panelBg(t.border(`┌${"─".repeat(Math.max(0, width - 2))}┐`));
 }
 
-/** Pad to full width so the overlay covers the content beneath it. */
-function padLine(content: string, width: number): string {
+/** └───┘ bottom edge of a boxed overlay panel, filled with the panel background. */
+export function boxBottom(width: number, t: OverlayTheme): string {
+  return t.panelBg(t.border(`└${"─".repeat(Math.max(0, width - 2))}┘`));
+}
+
+/**
+ * One frame row: │ content │. Content is clipped/padded to width - 2 and
+ * callers keep one space of padding inside each border via padLine. The whole
+ * row (borders included) is painted with the panel background so the panel
+ * reads as a solid card; pass t.selectionBg for the highlighted row.
+ */
+export function frameLine(content: string, width: number, t: OverlayTheme, bg: (text: string) => string = t.panelBg): string {
   const inner = Math.max(0, width - 2);
+  const singleLine = content.replace(/[\r\n]+/g, " ");
+  const clipped = truncateToWidth(singleLine, inner);
+  return bg(`${t.border("│")}${padVisible(clipped, inner)}${t.border("│")}`);
+}
+
+/** Pad to width - 4 so frameLine can wrap the line in "│ " and " " borders. */
+function padLine(content: string, width: number): string {
+  const inner = Math.max(0, width - 4);
   const singleLine = content.replace(/[\r\n]+/g, " ").replace(/\t/g, "  ");
   const clipped = truncateToWidth(singleLine, inner);
   return ` ${padVisible(clipped, inner)} `;
