@@ -83,3 +83,36 @@ jobs:
 
       - name: Publish package
         run: npm publish --workspace @booplex/bpx-consult --provenance --access public
+
+  publish-npm-endpoints:
+    name: Publish @booplex/bpx-endpoints to npm
+    needs: release-please
+    # Same shape as the consult job: fire when release-please cut a real
+    # bpx-endpoints release (paths_released carries the package path in
+    # manifest mode), or on manual dispatch with the publish flag. Kept as a
+    # separate job rather than merged into publish-npm so a force-publish of
+    # one package can't fail the other (republishing an existing version
+    # EPUBLISHes, and npm errors are per-package).
+    if: ${{ contains(needs.release-please.outputs.paths_released, 'packages/bpx-endpoints') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          # Same rule as the consult job: Node 24's bundled npm 11 for OIDC
+          # trusted publishing; no self-upgrade (sigstore crash, see above).
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm install
+      - run: npx tsc --noEmit -p packages/bpx-endpoints/tsconfig.json
+      - run: npm test --workspace @booplex/bpx-endpoints
+
+      - name: Publish package
+        run: npm publish --workspace @booplex/bpx-endpoints --provenance --access public
