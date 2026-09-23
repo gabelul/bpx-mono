@@ -415,7 +415,7 @@ function clampSurvivor(msg: Message, remainingTokenBudget: number): Message {
  * read the window, fall back to a conservative 32k (typical small advisor) so
  * we still re-fit rather than forwarding blindly.
  */
-export function deriveInputBudget(advisorContextWindow: number | undefined, budget: ContextBudget): number {
+export function deriveInputBudget(advisorContextWindow: number | undefined, budget: Pick<ContextBudget, "responseReserveTokens">): number {
 	const window = advisorContextWindow ?? 32_000;
 	// Floor the reserve at a sane minimum; never let it eat the whole window.
 	const reserve = Math.min(budget.responseReserveTokens, Math.floor(window * 0.5));
@@ -429,7 +429,7 @@ export function deriveInputBudget(advisorContextWindow: number | undefined, budg
 	// The cost is slightly more truncation; the benefit is the advisor stops
 	// dying on long sessions. Solo also retries on a residual too-long (solo.ts).
 	const uncertaintyMargin = Math.floor(window * 0.1);
-	return Math.max(1024, window - reserve - uncertaintyMargin);
+	return Math.max(1, window - reserve - uncertaintyMargin);
 }
 
 // ---------------------------------------------------------------------------

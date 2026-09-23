@@ -14,10 +14,11 @@ import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from 
 import type { Message, ThinkingLevel } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
-import { callCliAdvisor, cliContextWindow, type CliBackendConfig } from "./cli-backend.js";
+import { callCliAdvisor, type CliBackendConfig } from "./cli-backend.js";
 import { withTimeout } from "./timeout.js";
 import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSummary } from "./context-engine.js";
-import { resolvePersonaBackend, type BpxConsultConfig } from "./config.js";
+import type { BpxConsultConfig } from "./config.js";
+import { callSeatRoute, resolveSeatRoute } from "./route.js";
 import {
 	computeConfidence,
 	detectDisagreement,
@@ -43,7 +44,7 @@ export interface CouncilDetails {
 	errorMessage?: string;
 }
 
-const SYNTHESIZER_SYSTEM_PROMPT = `You are a synthesizer model. Several advisor personas have reviewed the same coding task, each from a different stance (advocating, critiquing, or weighing). Your job is to merge their views into ONE recommendation for the executor.
+export const SYNTHESIZER_SYSTEM_PROMPT = `You are a synthesizer model. Several advisor personas have reviewed the same coding task, each from a different stance (advocating, critiquing, or weighing). Your job is to merge their views into ONE recommendation for the executor.
 
 Rules:
 - The user message contains MULTIPLE replies, each under a "### <persona> [<stance>]" header. READ EVERY SECTION before synthesizing. Do not begin your synthesis until you have read all of them — if you think you only saw one, re-read the message; they are all there.
@@ -101,12 +102,9 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	}
 
 	// Resolve the synthesizer model.
-	const synth = resolveAdvisor(ctx, synthesizerKey);
-	if (!synth) {
-		return err(
-			`No synthesizer model configured (got "${synthesizerKey ?? "(none)"}"). Set modes.council.synthesizer.model.`,
-			{ mode: "council", members: [], synthesizer: "(none)", confidence: 0 },
-		);
+	const synth = resolveSeatRoute(config, { ...councilConfig?.synthesizer, model: synthesizerKey }, (key) => resolveAdvisor(ctx, key));
+	if (synth.kind === "error") {
+		return err(`No synthesizer route: ${synth.message}`, { mode: "council", members: [], synthesizer: "(none)", confidence: 0 });
 	}
 
 	// Resolve member models UPFRONT so we can fit the shared context to the
@@ -136,7 +134,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	const directive = question?.trim() ? `Specific question from the executor: ${question.trim()}` : undefined;
 
 	const minWindow = Math.min(
-		synth.model.contextWindow,
+		synth.contextWindow,
 		...memberAdvisors.map((m) => m.contextWindow),
 	);
 
@@ -258,14 +256,20 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	// drops oldest-first with an [omitted] marker if needed. Mirrors debate.ts.
 	const synthFit = buildConsultContext({
 		sessionMessages: [{ role: "user", content: synthUserPrompt, timestamp: Date.now() }],
-		advisorContextWindow: synth.model.contextWindow,
+		advisorContextWindow: synth.contextWindow,
 		budget: contextBudget,
 	});
+	if (synthFit.error) {
+		return err(`Council synthesizer window failed: ${synthFit.error}\n\n${memberBlock}`, {
+			mode: "council", members: memberResults.map((r) => ({ persona: r.persona, model: r.model, status: r.status })),
+			synthesizer: synth.label, confidence: confidence.confidence, errorMessage: synthFit.error,
+		});
+	}
 
 	try {
-		const synthResult = await callAdvisor({
+		const synthResult = await callSeatRoute({
 			ctx,
-			advisor: synth,
+			route: synth,
 			systemPrompt: SYNTHESIZER_SYSTEM_PROMPT,
 			messages: synthFit.messages,
 			thinkingLevel: councilConfig?.synthesizer?.thinkingLevel,
@@ -293,8 +297,9 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 			errorMessage: synthResult.errorMessage,
 		};
 
-		if (!synthResult.text) {
-			return err("Council synthesizer returned no usable text.", { ...details, errorMessage: synthResult.errorMessage ?? "empty synthesis" });
+		if (synthResult.stopReason === "error" || synthResult.stopReason === "aborted" || !synthResult.text) {
+			return err(`Council synthesizer failed: ${synthResult.errorMessage ?? synthResult.stopReason}\n\n${memberBlock}`,
+				{ ...details, errorMessage: synthResult.errorMessage ?? "empty synthesis" });
 		}
 
 		return ok(synthResult.text, details);
@@ -351,41 +356,17 @@ export function resolveCouncilMembers(
 		// model can route differently. Looked up from the RAW config persona
 		// (the resolved Persona carries defaultModel but not backend).
 		const rawPersona = config.personas?.[persona.name] ?? {};
-		const backend = resolvePersonaBackend(config, { backend: rawPersona.backend, defaultModel: modelKey });
-		if (backend?.type === "cli") {
-			// Window: declared contextWindow > preset (codex/claude/opencode) >
-			// undefined. No silent 32k fallback (council §3) — an unknown custom
-			// command with no declared window pre-fails with a clear message.
-			const window = cliContextWindow(backend);
-			if (window === undefined) {
-				preFailed.push({
-					persona: persona.name,
-					stance: persona.stance,
-					model: `cli:${backend.command}`,
-					status: "error",
-					text: "",
-					errorMessage: `CLI backend "${backend.command}" for ${persona.name} has no known context window. Set "contextWindow" on the backend in config, or use a preset command (codex/claude/opencode).`,
-					alignment: 0,
-				});
-				continue;
-			}
-			resolved.push({ persona, kind: "cli", backend, contextWindow: window, modelLabel: `cli:${backend.command}` });
+		const route = resolveSeatRoute(config, { ...rawPersona, model: modelKey }, resolveAdvisor);
+		if (route.kind === "error") {
+			preFailed.push({ persona: persona.name, stance: persona.stance, model: modelKey ?? "(none)",
+				status: "error", text: "", errorMessage: `${route.message} Persona: ${persona.name}.`, alignment: 0 });
 			continue;
 		}
-		const advisor = resolveAdvisor(modelKey);
-		if (!advisor) {
-			preFailed.push({
-				persona: persona.name,
-				stance: persona.stance,
-				model: modelKey ?? "(none)",
-				status: "error",
-				text: "",
-				errorMessage: `Could not resolve model "${modelKey ?? "(none)"}" for persona ${persona.name}.`,
-				alignment: 0,
-			});
-			continue;
+		if (route.kind === "cli") {
+			resolved.push({ persona, kind: "cli", backend: route.backend, contextWindow: route.contextWindow, modelLabel: route.label });
+		} else {
+			resolved.push({ persona, kind: "inline", advisor: route.advisor, contextWindow: route.contextWindow, modelLabel: route.label });
 		}
-		resolved.push({ persona, kind: "inline", advisor, contextWindow: advisor.model.contextWindow, modelLabel: advisor.label });
 	}
 	return { resolved, preFailed };
 }
@@ -417,6 +398,7 @@ async function runMember(
 				backend: member.backend,
 				signal,
 				cwd: ctx.cwd,
+				responseReserveTokens: contextBudget.responseReserveTokens,
 			});
 			// Normalize CliCallResult → ConsultCallResult shape so the status logic
 			// below is identical for inline and CLI members.
@@ -451,12 +433,18 @@ async function runMember(
 	const result = outcome.value;
 	const status: "ok" | "error" =
 		result.stopReason === "error" || result.stopReason === "aborted" || !result.text ? "error" : "ok";
+	// Clamp observability: if the persona's requested effort exceeded the model,
+	// say so at the end of the member's output so probes/transcripts show why a
+	// reply reads shallower than the roster promises. Config keeps the raw value.
+	const effortNote = result.effortAdjusted
+		? `\n\n(note: requested thinking ${result.effortAdjusted.requested} was downgraded to ${result.effortAdjusted.effective} — model supports less)`
+		: "";
 	return {
 		persona: persona.name,
 		stance: persona.stance,
 		model: modelLabel,
 		status,
-		text: result.text,
+		text: result.text + effortNote,
 		errorMessage: status === "error" ? result.errorMessage ?? result.stopReason : undefined,
 		alignment: status === "ok" ? validateStance(result.text, persona.stance) : 0,
 		usage: result.usage,

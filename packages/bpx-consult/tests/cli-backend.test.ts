@@ -7,7 +7,39 @@
  * exit-code handling, and the prompt assembly.
  */
 import { describe, expect, it } from "vitest";
-import { parseCliOutput } from "../src/cli-backend.js";
+import { callCliAdvisor, cliContextWindow, parseCliOutput, resolveInvocation } from "../src/cli-backend.js";
+
+describe("Codex preset model override", () => {
+	it("uses -m before stdin marker only when explicitly selected", () => {
+		expect(resolveInvocation({ type: "cli", command: "codex" }).args).toEqual(["exec", "--sandbox", "read-only", "--skip-git-repo-check", "-"]);
+		expect(resolveInvocation({ type: "cli", command: "codex", model: "gpt-5.6-sol" }).args).toEqual([
+			"exec", "--sandbox", "read-only", "--skip-git-repo-check", "-m", "gpt-5.6-sol", "-",
+		]);
+		expect(resolveInvocation({ type: "cli", command: "claude" }).args).toEqual(["-p", "--tools", ""]);
+		expect(resolveInvocation({ type: "cli", command: "opencode" }).args).toEqual(["run", "--format", "json", "--pure", "--agent", "bpx-consult"]);
+		expect(resolveInvocation({ type: "cli", command: "claude", model: "sonnet" }).args).toEqual(["-p", "--tools", "", "--model", "sonnet"]);
+		expect(resolveInvocation({ type: "cli", command: "opencode", model: "opencode/big-pickle" }).args).toEqual(["run", "--format", "json", "--pure", "--agent", "bpx-consult", "--model", "opencode/big-pickle"]);
+	});
+
+	it("treats inherited object names as custom commands, not presets", () => {
+		const backend = { type: "cli" as const, command: "constructor" };
+		expect(resolveInvocation(backend)).toEqual({ command: "constructor", args: [] });
+		expect(cliContextWindow(backend)).toBeUndefined();
+	});
+
+	it("does not silently ignore an override when custom args replace the preset", async () => {
+		const result = await callCliAdvisor({
+			systemPrompt: "test", messages: [], signal: undefined,
+			backend: { type: "cli", command: "codex", args: ["exec", "-"], model: "gpt-5.6-sol" },
+		});
+		expect(result.errorMessage).toMatch(/requires a supported preset/);
+		const custom = await callCliAdvisor({
+			systemPrompt: "test", messages: [], signal: undefined,
+			backend: { type: "cli", command: "claude", args: ["-p", "--model", "own-choice"], model: "sonnet" },
+		});
+		expect(custom.errorMessage).toMatch(/requires a supported preset/);
+	});
+});
 
 describe("parseCliOutput — defensive parsing", () => {
 	it("extracts text from codex/opencode JSONL item.completed lines", () => {
@@ -27,12 +59,15 @@ describe("parseCliOutput — defensive parsing", () => {
 		expect(parseCliOutput(out, "codex")).toBe("actual advisor reply");
 	});
 
-	it("ignores non-JSON lines that happen to start with { (broken JSON)", () => {
+	it("accepts only completed OpenCode answer text, not tool or progress events", () => {
 		const out = [
 			"{ this is not valid json",
-			'{"type":"item.completed","item":{"text":"real reply"}}',
+			'{"type":"tool_use","part":{"text":"tool output"}}',
+			'{"type":"step_finish","part":{"text":"progress"}}',
+			'{"type":"text","part":{"text":"real reply","time":{"end":1}}}',
 		].join("\n");
 		expect(parseCliOutput(out, "opencode")).toBe("real reply");
+		expect(parseCliOutput('{"type":"error","error":{"message":"failed"}}', "opencode")).toBe("");
 	});
 
 	it("collects multiple item.completed payloads", () => {

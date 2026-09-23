@@ -13,6 +13,7 @@ import { Type } from "typebox";
 import { isDisabledForModel, loadConfig } from "./src/config.js";
 import { runConsultConfigurator } from "./src/consult-ui.js";
 import { executeSolo } from "./src/solo.js";
+import { gutCheckConfig } from "./src/gut-check.js";
 import { executeCouncil } from "./src/council.js";
 import { executeDebate } from "./src/debate.js";
 import { registerTriggers } from "./src/triggers.js";
@@ -112,14 +113,7 @@ function registerConsultTool(pi: ExtensionAPI, budget: ReturnType<typeof createT
 				return executeDebate({ ctx, config, signal, onUpdate, question: params.question });
 			}
 			if (mode === "gut-check") {
-				// Gut-check = solo run against the cheap model in modes.gutCheck.
-				// Override modes.solo so executeSolo uses the gutCheck model + effort.
-				const gutCheck = config.modes?.gutCheck;
-				if (gutCheck?.model) {
-					const gutConfig = { ...config, modes: { ...config.modes, solo: { ...config.modes?.solo, ...gutCheck } } };
-					return executeSolo({ ctx, config: gutConfig, signal, onUpdate, question: params.question });
-				}
-				return executeSolo({ ctx, config, signal, onUpdate, question: params.question });
+				return executeSolo({ ctx, config: gutCheckConfig(config), signal, onUpdate, question: params.question });
 			}
 
 			return executeSolo({ ctx, config, signal, onUpdate, question: params.question });

@@ -218,9 +218,10 @@ describe("deriveInputBudget", () => {
 		// window 32k, reserve capped to 16k → input budget 16k
 		expect(deriveInputBudget(32_000, tiny)).toBe(12_800);
 	});
-	it("floors the input budget at 1024 tokens", () => {
+	it("never floors a small model's input budget above its window", () => {
 		const huge: ContextBudget = { ...BUDGET, responseReserveTokens: 100_000 };
-		expect(deriveInputBudget(1000, huge)).toBeGreaterThanOrEqual(1024);
+		expect(deriveInputBudget(1000, huge)).toBe(400);
+		expect(deriveInputBudget(512, huge)).toBe(205);
 	});
 });
 
@@ -256,6 +257,17 @@ describe("buildConsultContext — the §P fix", () => {
 		const last = result.messages[result.messages.length - 1];
 		const lastText = typeof last.content === "string" ? last.content : "";
 		expect(lastText).toContain("Stage: stuck");
+	});
+
+	it("fits or fails closed for a 512-token custom CLI", () => {
+		const result = buildConsultContext({
+			sessionMessages: [userText("x".repeat(4000))],
+			advisorContextWindow: 512,
+			budget: BUDGET,
+			directive: "Give a concise answer.",
+		});
+		expect(result.maxInputTokens).toBe(205);
+		expect(result.estimatedTokens).toBeLessThanOrEqual(result.maxInputTokens);
 	});
 
 	it("forwards a short session essentially unchanged", () => {

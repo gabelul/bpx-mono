@@ -106,9 +106,11 @@ function extractJsonObject(raw: string): string | null {
 
 /**
  * Coerce a name into a safe slug: lowercase, trim, spaces→hyphens, drop
- * anything that isn't a-z0-9-. Empty result → null (caller regenerates).
+ * anything that isn't a-z0-9-. Empty result → null (caller regenerates or
+ * re-prompts). Also applied to manually-added names so both creation paths
+ * produce the same slug convention.
  */
-function sanitizeName(value: unknown): string | null {
+export function sanitizeName(value: unknown): string | null {
 	if (typeof value !== "string") return null;
 	const slug = value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
 	return slug.length > 0 ? slug : null;

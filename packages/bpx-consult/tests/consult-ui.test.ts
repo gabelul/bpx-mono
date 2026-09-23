@@ -24,10 +24,14 @@ vi.mock("@earendil-works/pi-ai", () => ({
 // Import AFTER the mock is registered.
 const {
 	buildModelItems,
+	buildCodexModelItems,
 	buildEffortItems,
 	buildModeItems,
 	buildToggleItems,
 	buildWhenStuckItems,
+	buildRoundsItems,
+	buildPersonaItems,
+	debateRoleProse,
 	buildStanceItems,
 	buildMainMenu,
 	buildCouncilMenu,
@@ -72,6 +76,20 @@ describe("buildModelItems", () => {
 		const available = [model("anthropic", "claude-opus-4-6", "Claude Opus")];
 		const items = buildModelItems(available, undefined);
 		expect(items.every((i) => !i.label.includes("✓"))).toBe(true);
+	});
+});
+
+describe("buildCodexModelItems", () => {
+	it("offers CLI default and CLI models, never pi provider keys", () => {
+		const items = buildCodexModelItems([{ id: "gpt-5.6-sol", displayName: "GPT-5.6-Sol" }], undefined);
+		expect(items.map((item) => item.value)).toEqual(["__codex_default__", "gpt-5.6-sol", "__codex_manual__", "__codex_refresh__"]);
+		expect(items[0]?.label).toContain("✓");
+	});
+
+	it("retains an unlisted saved model when discovery returns nothing", () => {
+		const items = buildCodexModelItems([], "gpt-6-sol");
+		expect(items.find((item) => item.value === "gpt-6-sol")?.label).toContain("saved, not listed");
+		expect(items.find((item) => item.value === "gpt-6-sol")?.label).toContain("✓");
 	});
 });
 
@@ -128,6 +146,21 @@ describe("buildWhenStuckItems", () => {
 	});
 });
 
+describe("buildRoundsItems / buildPersonaItems", () => {
+	it("offers rounds 1–4 and marks the current", () => {
+		const items = buildRoundsItems(2);
+		expect(items.map((i) => i.value)).toEqual(["1", "2", "3", "4"]);
+		expect(items.find((i) => i.value === "2")?.label).toContain("✓");
+		expect(items.find((i) => i.value === "3")?.label).toBe("3");
+	});
+
+	it("lists persona names and marks the current role holder", () => {
+		const items = buildPersonaItems(["architect", "critic", "simplifier"], "critic");
+		expect(items.map((i) => i.value)).toEqual(["architect", "critic", "simplifier"]);
+		expect(items.find((i) => i.value === "critic")?.label).toContain("✓");
+	});
+});
+
 describe("buildMainMenu", () => {
 	it("always ends with a Done entry", () => {
 		const items = buildMainMenu(DEFAULT_CONFIG);
@@ -137,7 +170,8 @@ describe("buildMainMenu", () => {
 	it("surfaces the current default mode and solo model in labels", () => {
 		const items = buildMainMenu(DEFAULT_CONFIG);
 		expect(items.some((i) => i.label.startsWith("Default mode:"))).toBe(true);
-		expect(items.some((i) => i.label.startsWith("Solo model:"))).toBe(true);
+		// Progressive disclosure: solo collapsed to ONE summary line.
+		expect(items.some((i) => i.value === "solo.detail" && i.label.startsWith("Solo —"))).toBe(true);
 	});
 
 	it("has ONE council entry and no per-member rows (collapsed)", () => {
@@ -150,14 +184,15 @@ describe("buildMainMenu", () => {
 		expect(items.some((i) => i.value === "council.synth")).toBe(false);
 	});
 
-	it("is short — solo/gut model+effort, one council entry, triggers, enabled, done", () => {
+	it("is short — mode summary lines, one council entry, triggers, enabled, done", () => {
+		// Progressive disclosure (2026-09): one summary line per mode opening a
+		// detail submenu — 9 rows instead of the old 13.
 		const items = buildMainMenu(DEFAULT_CONFIG);
 		expect(items.map((i) => i.value)).toEqual([
 			"defaultMode",
-			"solo.model",
-			"solo.effort",
-			"gutCheck.model",
-			"gutCheck.effort",
+			"solo.detail",
+			"gutCheck.detail",
+			"debate.detail",
 			"council.manage",
 			"triggers.onDone",
 			"triggers.whenStuck",
@@ -166,11 +201,51 @@ describe("buildMainMenu", () => {
 		]);
 	});
 
+	it("summarizes each mode in its line: model, thinking, roles, rounds", () => {
+		const items = buildMainMenu({
+			...DEFAULT_CONFIG,
+			modes: {
+				...DEFAULT_CONFIG.modes!,
+				solo: { model: "openai/gpt-5.6-sol", thinkingLevel: "high" },
+				debate: { advocate: "architect", critic: "critic", rounds: 3 },
+			},
+			triggers: { onDone: false, whenStuck: 3 },
+		});
+		expect(items.find((i) => i.value === "solo.detail")?.label).toBe("Solo — inline/gpt-5.6-sol, thinking high");
+		expect(items.find((i) => i.value === "debate.detail")?.label).toBe("Debate — architect vs critic, 3 rounds");
+		// Unassigned roles render as (unassigned); singular rounds reads correctly.
+		const bare = buildMainMenu({ ...DEFAULT_CONFIG, modes: { ...DEFAULT_CONFIG.modes!, debate: {} } });
+		expect(bare.find((i) => i.value === "debate.detail")?.label).toBe("Debate — (unassigned) vs (unassigned), 2 rounds");
+		expect(items.find((i) => i.value === "triggers.whenStuck")?.label).toBe("Trigger — whenStuck: 3 attempts");
+		const off = buildMainMenu(DEFAULT_CONFIG);
+		expect(off.find((i) => i.value === "triggers.whenStuck")?.label).toBe("Trigger — whenStuck: off");
+	});
+
 	it("describes a dead model key without crashing (falls back to the raw key)", () => {
 		// A model key whose provider/modelId can't be parsed should still render.
 		const items = buildMainMenu({ ...DEFAULT_CONFIG, modes: { ...DEFAULT_CONFIG.modes!, solo: { model: "garbage-no-slash" } } });
-		const soloRow = items.find((i) => i.value === "solo.model");
+		const soloRow = items.find((i) => i.value === "solo.detail");
 		expect(soloRow?.label).toContain("garbage-no-slash");
+	});
+
+	describe("debateRoleProse", () => {
+		it("names the persona's own model so a role pick is never a silent surprise", () => {
+			const config = {
+				...DEFAULT_CONFIG,
+				personas: { simplifier: { defaultModel: "google/gemini-2.5-flash" } },
+				modes: { ...DEFAULT_CONFIG.modes!, debate: { advocate: "simplifier", critic: "critic", rounds: 2 } },
+			};
+			const prose = debateRoleProse(config as never, "advocate").join(" ");
+			expect(prose).toContain("simplifier");
+			expect(prose).toContain("gemini-2.5-flash");
+			expect(prose).toContain("Council members");
+		});
+
+		it("tells the user when no persona is assigned", () => {
+			const config = { ...DEFAULT_CONFIG, modes: { ...DEFAULT_CONFIG.modes!, debate: {} } };
+			const prose = debateRoleProse(config as never, "critic");
+			expect(prose.some((line) => line.includes("No persona assigned"))).toBe(true);
+		});
 	});
 });
 
@@ -192,17 +267,29 @@ describe("buildCouncilMenu", () => {
 		expect(items.find((i) => i.value === "member.architect")?.label).toMatch(/opus/i);
 	});
 
-	it("always offers disable / enable / add / synthesizer / back", () => {
+	it("shows the active Codex model, not the saved inline model", () => {
+		const cfg = {
+			...DEFAULT_CONFIG,
+			personas: { critic: { defaultModel: "anthropic/claude-sonnet-4-6", codexModel: "gpt-5.6-sol", backend: { type: "cli", command: "codex" } } },
+		};
+		expect(buildCouncilMenu(cfg as never).find((i) => i.value === "member.critic")?.label).toContain("gpt-5.6-sol");
+		expect(buildCouncilMenu(cfg as never).find((i) => i.value === "member.critic")?.label).not.toContain("sonnet");
+	});
+
+	it("always offers seats/add/synthesizer/back — no separate disable/enable rows", () => {
 		const items = buildCouncilMenu(DEFAULT_CONFIG);
-		expect(items.some((i) => i.value === "disable")).toBe(true);
-		expect(items.some((i) => i.value === "enable")).toBe(true);
+		expect(items.some((i) => i.value === "seats")).toBe(true);
 		expect(items.some((i) => i.value === "add")).toBe(true);
 		expect(items.some((i) => i.value === "council.synth")).toBe(true);
+		expect(items.some((i) => i.value === "disable")).toBe(false);
+		expect(items.some((i) => i.value === "enable")).toBe(false);
+		expect(items.some((i) => i.value === "add.ai")).toBe(false);
 		expect(items[items.length - 1]?.value).toBe("__back__");
 	});
 
-	it("counts unseated personas in the enable label", () => {
-		// Two personas defined but only one seated → 1 available to enable.
+	it("offers the single seats toggle regardless of roster state", () => {
+		// The old enable/disable pair collapsed into one toggle over all personas;
+		// no more per-state label math.
 		const config = {
 			...DEFAULT_CONFIG,
 			modes: { ...DEFAULT_CONFIG.modes, council: { ...DEFAULT_CONFIG.modes!.council!, members: ["architect"] } },
@@ -211,14 +298,14 @@ describe("buildCouncilMenu", () => {
 				critic: { defaultModel: "anthropic/claude-sonnet-4-6" },
 			},
 		};
-		const enableRow = buildCouncilMenu(config).find((i) => i.value === "enable");
-		expect(enableRow?.label).toMatch(/1 available/);
+		const seatsRow = buildCouncilMenu(config).find((i) => i.value === "seats");
+		expect(seatsRow?.label).toBe("Seat or unseat personas…");
 	});
 
-	it("says 'none available' to enable when every persona is seated", () => {
-		const enableRow = buildCouncilMenu(DEFAULT_CONFIG).find((i) => i.value === "enable");
-		// default config seats all three default personas
-		expect(enableRow?.label).toMatch(/none available/);
+	it("collapses synthesizer model + thinking into one detail row", () => {
+		const row = buildCouncilMenu(DEFAULT_CONFIG).find((i) => i.value === "council.synth");
+		expect(row?.label).toMatch(/^Synthesizer — .+, thinking /);
+		expect(buildCouncilMenu(DEFAULT_CONFIG).some((i) => i.value === "council.synthEffort")).toBe(false);
 	});
 
 	it("renders an empty-roster council without crashing", () => {
@@ -228,7 +315,8 @@ describe("buildCouncilMenu", () => {
 			personas: {},
 		};
 		const items = buildCouncilMenu(config);
-		expect(items.some((i) => i.value === "disable")).toBe(true);
+		expect(items.some((i) => i.value === "seats")).toBe(true);
+		expect(items.some((i) => i.value === "add")).toBe(true);
 		expect(items.filter((i) => i.value.startsWith("member.")).length).toBe(0);
 	});
 });

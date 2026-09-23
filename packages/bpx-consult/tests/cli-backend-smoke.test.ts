@@ -3,10 +3,12 @@
  * CLI scripts (deterministic, no real codex/claude auth needed). Validated via
  * vitest so the NodeNext .js→.ts resolution works without manual loader hacks.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { callCliAdvisor } from "../src/cli-backend.js";
 
 import { dirname, join } from "node:path";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 const BIN = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "cli-bin");
 
@@ -47,6 +49,74 @@ describe("CLI backend — engineered branches", () => {
 		expect(r.timedOut).toBe(true);
 		expect(r.text).toBe("");
 		expect(r.errorMessage).toMatch(/timed out after 800ms/);
+	});
+
+	it("waits for a SIGTERM-ignoring child to die before reporting timeout", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "bpx-cli-kill-"));
+		const binary = join(dir, "ignore-term");
+		const pidFile = join(dir, "pid");
+		try {
+			writeFileSync(binary, `#!/usr/bin/env node\nrequire('fs').writeFileSync(process.argv[2], String(process.pid));\nprocess.on('SIGTERM', () => {});\nprocess.stdin.resume();\nsetInterval(() => {}, 1000);\n`);
+			chmodSync(binary, 0o755);
+			const result = await callCliAdvisor({ systemPrompt: "advisor", messages: baseMessages as never,
+				backend: { type: "cli", command: binary, args: [pidFile], timeoutMs: 250 }, signal: undefined });
+			expect(result.timedOut).toBe(true);
+			expect(existsSync(pidFile)).toBe(true);
+			expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it.each(["inherit", "ignore"])("kills a descendant after its parent exits 0 on TERM (%s stdio)", async (stdio) => {
+		const dir = mkdtempSync(join(tmpdir(), "bpx-cli-tree-"));
+		const binary = join(dir, "parent");
+		const pidFile = join(dir, "pids");
+		try {
+			writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('fs');\nconst child = require('child_process').spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"], { stdio: process.argv[3] });\nfs.writeFileSync(process.argv[2], JSON.stringify({ parent: process.pid, child: child.pid }));\nprocess.on('SIGTERM', () => process.exit(0));\nprocess.stdin.resume();\n`);
+			chmodSync(binary, 0o755);
+			const result = await callCliAdvisor({ systemPrompt: "advisor", messages: baseMessages as never,
+				backend: { type: "cli", command: binary, args: [pidFile, stdio], timeoutMs: 300 }, signal: undefined });
+			expect(result.timedOut).toBe(true);
+			const pids = JSON.parse(readFileSync(pidFile, "utf8")) as { parent: number; child: number };
+			for (const pid of Object.values(pids)) {
+				await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 2_000, interval: 25 });
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}, 10_000);
+
+	it("rejects serialized prompts that exceed a tiny CLI window before spawning", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "bpx-cli-window-"));
+		const binary = join(dir, "reply");
+		const marker = join(dir, "spawned");
+		try {
+			writeFileSync(binary, `#!/usr/bin/env node\nrequire('fs').writeFileSync(process.argv[2], 'yes');\nprocess.stdin.resume(); process.stdin.on('end', () => process.stdout.write('OK'));\n`);
+			chmodSync(binary, 0o755);
+			const backend = { type: "cli" as const, command: binary, args: [marker], contextWindow: 512 };
+			const longSystem = await callCliAdvisor({ systemPrompt: "x".repeat(4000), messages: [], backend, signal: undefined });
+			expect(longSystem.errorMessage).toMatch(/context window/i);
+			expect(existsSync(marker)).toBe(false);
+			const manyRoles = await callCliAdvisor({ systemPrompt: "Answer OK", messages: Array.from({ length: 100 }, () => ({ role: "user" as const, content: "x", timestamp: 0 })), backend, signal: undefined });
+			expect(manyRoles.errorMessage).toMatch(/context window/i);
+			expect(existsSync(marker)).toBe(false);
+			const small = await callCliAdvisor({ systemPrompt: "Answer OK", messages: [], backend, signal: undefined });
+			expect(small.text).toBe("OK");
+			expect(existsSync(marker)).toBe(true);
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+
+	it("preserves a multibyte reply split across stdout chunks", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "bpx-cli-utf8-"));
+		const binary = join(dir, "split-utf8");
+		try {
+			writeFileSync(binary, `#!/usr/bin/env node\nprocess.stdin.resume(); process.stdin.on('end', () => {\nprocess.stdout.write(Buffer.from([0x63, 0x61, 0x66, 0xc3]));\nsetTimeout(() => process.stdout.write(Buffer.from([0xa9])), 50);\n});\n`);
+			chmodSync(binary, 0o755);
+			const result = await callCliAdvisor({ systemPrompt: "advisor", messages: baseMessages as never,
+				backend: { type: "cli", command: binary, args: ["custom"] }, signal: undefined });
+			expect(result.text).toBe("café");
+		} finally { rmSync(dir, { recursive: true, force: true }); }
 	});
 
 	it("3. non-zero exit → graceful error result, not crash", async () => {

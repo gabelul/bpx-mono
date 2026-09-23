@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { callAdvisor, resolveAdvisor, type ConsultCallResult } from "./advisor.js";
 import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSummary } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
-import { resolveBackend } from "./config.js";
+import { resolveSeatRoute } from "./route.js";
 import { callCliAdvisor } from "./cli-backend.js";
 import {
 	ERR_ABORTED_DETAIL,
@@ -33,7 +33,6 @@ import {
 	ERR_NO_API_KEY,
 	ERR_NO_API_KEY_DETAIL,
 	ERR_NO_MODEL,
-	ERR_NO_MODEL_DETAIL,
 	errCallFailed,
 	errCallThrew,
 	errMisconfigured,
@@ -59,7 +58,7 @@ export function isTooLongError(errorMessage: string | undefined): boolean {
 // Load the system prompt once, with a fallback so a missing/unreadable file
 // never bricks the extension at import time. Bundled at prompts/advisor-system.txt.
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ADVISOR_SYSTEM_PROMPT = (() => {
+export const ADVISOR_SYSTEM_PROMPT = (() => {
 	const fallback =
 		"You are an advisor model consulted mid-task by a coding executor. Return a PLAN, a CORRECTION, or a STOP signal. Be concrete, cite specifics, never call tools, never manufacture agreement.";
 	try {
@@ -110,16 +109,15 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 	const { ctx, config, signal, onUpdate, question } = input;
 
 	const soloConfig = config.modes?.solo;
-	const advisor = resolveAdvisor(ctx, soloConfig?.model);
 	const thinkingLevel = soloConfig?.thinkingLevel;
-
-	if (!advisor) {
-		return err(ERR_NO_MODEL, { advisorModel: "(none)", mode: "solo", thinkingLevel, errorMessage: ERR_NO_MODEL_DETAIL });
+	const route = resolveSeatRoute(config, { ...soloConfig, model: soloConfig?.model }, (key) => resolveAdvisor(ctx, key));
+	if (route.kind === "error") {
+		return err(ERR_NO_MODEL, { advisorModel: "(none)", mode: "solo", thinkingLevel, errorMessage: route.message });
 	}
 
 	onUpdate?.({
-		content: [{ type: "text", text: msgConsulting(advisor.label) }],
-		details: { advisorModel: advisor.label, thinkingLevel, mode: "solo" },
+		content: [{ type: "text", text: msgConsulting(route.label) }],
+		details: { advisorModel: route.label, thinkingLevel, mode: "solo" },
 	});
 
 	// 1. Pull Pi's already-compacted session context for the active branch.
@@ -134,10 +132,9 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 	// terse: cap the response hard so gut-check gets a short read, not an essay.
 	// Honored when gut-check merges its config into solo (modes.gutCheck.terse).
 	const maxTokens = soloConfig?.terse ? Math.min(1024, contextBudget.responseReserveTokens) : contextBudget.responseReserveTokens;
-	const advisorWindow = advisor.model.contextWindow;
-	const directive = question?.trim()
-		? `Specific question from the executor: ${question.trim()}`
-		: undefined;
+	const advisorWindow = route.contextWindow;
+	const directive = [question?.trim() ? `Specific question from the executor: ${question.trim()}` : undefined,
+		soloConfig?.terse ? "Give a short, direct answer." : undefined].filter(Boolean).join("\n\n") || undefined;
 
 	let fit = buildConsultContext({
 		sessionMessages: branchMessages,
@@ -153,7 +150,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 	// overflow this extension exists to prevent.
 	if (fit.error) {
 		return err(`Couldn't fit the advisor window: ${fit.error}`, {
-			advisorModel: advisor.label,
+			advisorModel: route.label,
 			thinkingLevel,
 			mode: "solo",
 			fittedTokens: fit.estimatedTokens,
@@ -170,25 +167,26 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 		// context is reused either way — §C ran once, both backends get the same
 		// window-safe payload. CLI uses spawn (non-blocking) so a CLI-backed council
 		// member can run parallel to an inline one (the whole point of async).
-		const backend = resolveBackend(config, soloConfig?.model);
 		let text: string;
 		let usage: { input: number; output: number; total: number } | undefined;
 		let stopReason: string;
 		let errorMessage: string | undefined;
 
-		if (backend?.type === "cli") {
+		if (route.kind === "cli") {
 			const cliResult = await callCliAdvisor({
 				systemPrompt: ADVISOR_SYSTEM_PROMPT,
 				messages: fit.messages,
-				backend: { type: "cli", command: backend.command, args: backend.args, timeoutMs: backend.timeoutMs },
+				backend: route.backend,
 				signal,
 				cwd: ctx.cwd,
+				responseReserveTokens: contextBudget.responseReserveTokens,
 			});
 			text = cliResult.text;
 			usage = undefined; // CLIs don't report token usage
 			stopReason = cliResult.text ? "stop" : cliResult.timedOut ? "aborted" : "error";
 			errorMessage = cliResult.errorMessage;
 		} else {
+			const advisor = route.advisor;
 			// Inline path with too-long retry (Bug A). deriveInputBudget already
 			// subtracts a 10% uncertainty margin so overshoot is rare; a residual
 			// too-long shrinks the window and retries up to MAX_TOO_LONG_RETRIES times.
@@ -223,7 +221,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 		}
 
 		const baseDetails: SoloDetails = {
-			advisorModel: advisor.label,
+			advisorModel: route.label,
 			thinkingLevel,
 			mode: "solo",
 			usage,
@@ -248,7 +246,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 	} catch (e) {
 		const message = e instanceof Error ? e.message : String(e);
 		return err(errCallThrew(message), {
-			advisorModel: advisor.label,
+			advisorModel: route.label,
 			thinkingLevel,
 			mode: "solo",
 			fittedTokens: fit.estimatedTokens,

@@ -49,7 +49,7 @@ pi install ./packages/bpx-consult
 
 ## The window bug, and the fix
 
-The reason this extension exists. The advisor extension I tried forwarded the whole session to the advisor without checking whether the advisor's *own* window could hold it — so my second opinion errored out at exactly the moment the session got long enough to need one. Every consult path here runs the conversation through a context engine first, and it fits to *that* advisor's real window — read live from the registry, never a global constant. Point a 32k flash-tier advisor at a 128k session and it fits. Point an 8k CLI advisor at the same session and it still fits. Council fits every member to the *smallest* window in the roster, so the weakest member can't overflow.
+The reason this extension exists. The advisor extension I tried forwarded the whole session to the advisor without checking whether the advisor's *own* window could hold it — so my second opinion errored out at exactly the moment the session got long enough to need one. Every consult path here runs the conversation through a context engine first. Inline windows come from Pi's model registry; CLI windows use a declared size, discovered OpenCode metadata, or a preset cap for Codex/Claude. Point a 32k flash-tier advisor at a 128k session and it fits. Point an 8k CLI advisor at the same session and it still fits. Council fits every member to the *smallest* window in the roster, so the weakest member can't overflow.
 
 That's the guarantee. What changed in 0.2.0 is *how* it fits.
 
@@ -84,17 +84,17 @@ Because it now decides *what* to keep, it can tell you what it did. Every consul
 
 Call `consult()` with no args and solo runs. Pass `mode: "council"` (or `debate`, `gut-check`) to pick another.
 
-Type **`/consult`** to configure everything interactively — no file editing. It opens a menu: default mode, solo and gut-check models and effort, the council roster, both triggers, and enable/disable. Pick a setting, choose from a fuzzy-filterable list of the models you actually have authed, and the change saves immediately and the menu reopens so you can set several in one go. (`/consult status` prints the old read-out if you just want a glance.)
+Type **`/consult`** to configure routes interactively: Solo, gut-check, Council members, and the synthesizer each have a backend-first editor. Debate uses its selected personas and the same synthesizer routes. Inline seats show Pi's available models; CLI seats keep their own model choices. Candidate models can be probed on their prospective route before saving. (`/consult status` prints a quick read-out.)
 
 The **Council members** submenu (one entry on the main `/consult` menu) manages who's on the council. Each seated member opens a detail view:
 
-- **Assign a model** to the member (fuzzy-filter your authed models). Before committing, you can **Test with this persona first** — it probes the *candidate* model with the member's actual prompt and reports whether it responds, so a dead key or 401 is caught at selection time, not in a live council call. Assign only if it passes (or skip the test and assign now).
-- **Route the seat to a CLI backend** — inline, or codex / claude / opencode CLI, or a **Custom CLI** (any executable: command + structured args + a required context window). Each CLI seat runs as a subprocess in parallel with the inline seats, so one provider dying doesn't collapse the council. The same Test probe works for CLI routes (missing executable, timeout, nonzero exit, empty output), and a custom CLI must pass it before it's saved — it has to accept bpx-consult's stdin contract (markdown transcript in, text/JSONL out).
+- **Choose the backend first** — inline, codex / claude / opencode CLI, or a **Custom CLI** (any executable: command + structured args + a required context window). Each CLI seat runs as a subprocess in parallel with inline seats. A custom CLI must pass a probe before it's saved; it has to accept bpx-consult's stdin contract (markdown transcript in, text/JSONL out).
+- **Choose a model for that backend.** Codex lists models through its app-server; OpenCode runs `opencode models --verbose`; Claude has no stable model-list command, so use its configured default or enter an ID/alias. Every preset allows manual entry and a no-override default. Listing isn't proof of account access: **Test with this persona first** probes the candidate on its actual route. Inline and per-CLI selections remain separate when switching backends. Custom CLI arguments remain yours; the picker never guesses a model flag for them.
 - **Retest the assigned route** any time from the same detail view.
 - **Enable / disable** a persona — unseating keeps its definition, so re-enabling restores its model
 - **Add manually** — type a name, pick a stance (for/against/neutral), pick a model
 - **Add AI-generated** — describe the advisor's focus, pick a model to draft it, confirm the `{name, stance, system prompt}` it returns, and seat it
-- **Synthesizer model** — the model that merges member verdicts into one call
+- **Synthesizer route** — backend and model used to merge Council verdicts and close Debate
 
 The default roster seats architect/critic/simplifier on distinct model tiers so parallel calls don't all hammer one provider. CLI routing is persona-scoped — two seats on the same model can route differently (one inline, one CLI). Advanced settings (context-budget char caps, per-backend timeouts) still live in the config file.
 
@@ -193,7 +193,7 @@ Advice comes back differently depending on who asked for it. `feedbackMode` (def
 
 ## Backends
 
-Solo **and** council members can route to an external CLI instead of pi's inline provider. The `/consult` menu's Council members submenu sets this per persona: inline, a preset (codex / claude / opencode), or a **Custom CLI** (any executable — command + structured args + a required context window, probe-tested before it's saved). The legacy `backends.<model>` config map still works as a fallback. Each CLI reads the fitted context from stdin. The subprocess is non-blocking, so it doesn't serialize under the hood — and a council can mix inline and CLI seats in parallel, so one provider dying (rate limit, dead key) no longer collapses the whole council.
+Solo, gut-check, Council members, Debate roles, and the shared synthesizer can each use an inline model or CLI route. Set `backend` and `cliModels` on that seat in `/consult` or config; keep `model` (or persona `defaultModel`) for its inline choice. The legacy `backends.<model>` map and persona `codexModel` still load. Presets run `codex exec`, `claude -p` (tools disabled), or `opencode run --format json` (dedicated agent with tool-deny settings; not a sandbox). Custom CLIs need a declared `contextWindow` and own their argv; no model flag is appended to custom args. OpenCode model discovery reads `limit.context`/`limit.input` from `opencode models --verbose`; a manual ID or CLI default needs a declared window rather than an invented fallback. Every CLI gets its fitted transcript on stdin. Without a selected CLI model, the CLI's configured default runs.
 
 ---
 
@@ -211,7 +211,7 @@ What v1 does *not* have: per-member circuit-breaker with exponential backoff. Is
 
 ## Config
 
-`~/.pi/agent/bpx-consult.json` (global) or `.pi/bpx-consult.json` (project-local, trusted projects only). Project overrides global at the leaf level.
+`~/.pi/agent/bpx-consult.json` (global) or `.pi/bpx-consult.json` (project-local, trusted projects only). Project overrides global at the leaf level. `/consult` edits the global file; edit project-local overrides in `.pi/bpx-consult.json` directly.
 
 ```jsonc
 {
@@ -270,7 +270,7 @@ The full design (including the decisions behind each of these) is in [SPEC.md on
 
 - pi 0.80+ (uses the `@earendil-works/pi-ai/compat` `completeSimple` entry, event handlers, `sendUserMessage`)
 - Node 22.19+ — pi's own packages require it, so this does too.
-- At least one provider authed via `/login`. The default roster uses Anthropic; override `personas.*.defaultModel` to match what you have.
+- For inline seats, a provider authed via `/login`. CLI-only seats do not need a matching Pi registry model. The default roster uses Anthropic inline; change its routes if those aren't authed.
 - For the CLI backend: `codex`, `claude`, or `opencode` installed and on PATH.
 
 ---

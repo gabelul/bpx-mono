@@ -87,6 +87,15 @@ describe("resolveCouncilMembers — CLI members", () => {
 		expect(resolved[0]?.contextWindow).toBe(200_000); // codex preset
 	});
 
+	it("passes the persona's Codex model override to the live member and its label", () => {
+		const cfg = configWith({
+			personas: { critic: { defaultModel: "anthropic/claude-haiku-4-5", codexModel: "gpt-5.6-sol", backend: { type: "cli", command: "codex" } } },
+		});
+		const { resolved } = resolveCouncilMembers([persona("critic", "anthropic/claude-haiku-4-5")], cfg, stubRegistry);
+		expect(resolved[0]?.modelLabel).toBe("cli:codex/gpt-5.6-sol");
+		if (resolved[0]?.kind === "cli") expect(resolved[0].backend.model).toBe("gpt-5.6-sol");
+	});
+
 	it("uses a declared contextWindow on a custom CLI command", () => {
 		// Council §3: custom JSON backends must declare a window. A declared one wins.
 		const cfg = configWith({ backends: { "local/my-cli": { type: "cli", command: "my-cli", contextWindow: 64_000 } } });

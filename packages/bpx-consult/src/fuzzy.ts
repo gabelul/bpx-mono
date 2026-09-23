@@ -5,7 +5,7 @@
  * predicates (isBackspace/isPrintable) that picker.ts's filterable picker
  * drives off of. All side-effect-free and TUI-free: the only dependency is the
  * SelectItem shape filterItems ranks. Kept apart from picker.ts so that module
- * holds only bordered-panel/SelectList wiring.
+ * holds only the framed-card wiring.
  */
 
 import type { SelectItem } from "@earendil-works/pi-tui";

@@ -8,6 +8,7 @@
  */
 
 import type { Api, Message, Model, ThinkingLevel } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parseModelKey } from "@juicesharp/rpiv-config";
@@ -36,6 +37,33 @@ export function resolveAdvisor(ctx: ExtensionContext, modelKey: string | undefin
 	if (!model) return undefined;
 	return { model, label: `${parsed.provider}/${parsed.modelId}` };
 }
+
+/**
+ * Clamp a requested thinking level to what the model actually supports.
+ * Config values can exceed a model's support (JSON edits, AI-generated
+ * personas, model reassignment) — providers react unpredictably to unsupported
+ * levels, so every inline call normalizes here. Picks the highest supported
+ * level at or below the request; if none sits below, the lowest supported
+ * level. Models supporting only "off" receive no reasoning option.
+ * Undefined ("model default") passes through untouched. Never mutates config —
+ * the raw value stays on disk.
+ */
+export function clampThinkingLevel(model: Model<Api>, requested?: ThinkingLevel): ThinkingLevel | undefined {
+	if (!requested) return undefined;
+	// ModelThinkingLevel is wider than ThinkingLevel (it includes "off") — only
+	// real effort levels participate in the clamp.
+	const supported = getSupportedThinkingLevels(model).filter((level): level is ThinkingLevel =>
+		(EFFORT_ORDER as string[]).includes(level),
+	);
+	if (supported.length === 0) return undefined;
+	if (supported.includes(requested)) return requested;
+	const rank = (level: ThinkingLevel) => EFFORT_ORDER.indexOf(level);
+	const requestRank = rank(requested);
+	const below = supported.filter((level) => rank(level) < requestRank).sort((a, b) => rank(a) - rank(b));
+	return below[below.length - 1] ?? supported.slice().sort((a, b) => rank(a) - rank(b))[0];
+}
+
+const EFFORT_ORDER: ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 
 /**
  * Fetch API key + headers for a model. Wraps the registry call in the same
@@ -73,6 +101,10 @@ export interface ConsultCallResult {
 	usage: { input: number; output: number; total: number } | undefined;
 	stopReason: string;
 	errorMessage?: string;
+	/** Set when the requested thinking level exceeded the model's support and
+	 * was clamped down for the call. Callers surface this in probes and tests;
+	 * config on disk keeps the raw requested value. */
+	effortAdjusted?: { requested: ThinkingLevel; effective: ThinkingLevel | "off" };
 }
 
 /**
@@ -91,11 +123,14 @@ export async function callAdvisor(input: ConsultCallInput): Promise<ConsultCallR
 		return { text: "", usage: undefined, stopReason: "error", errorMessage: auth.error };
 	}
 
+	const effectiveLevel = clampThinkingLevel(advisor.model, thinkingLevel);
 	const response = await completeSimple(
 		advisor.model,
 		{ systemPrompt, messages, tools: [] },
-		{ apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: thinkingLevel, sessionId: input.sessionId, maxTokens: input.maxTokens },
+		{ apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: effectiveLevel, sessionId: input.sessionId, maxTokens: input.maxTokens },
 	);
+	const effortAdjusted: ConsultCallResult["effortAdjusted"] =
+		thinkingLevel && effectiveLevel !== thinkingLevel ? { requested: thinkingLevel, effective: effectiveLevel ?? "off" } : undefined;
 
 	const text = response.content
 		.filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -118,6 +153,7 @@ export async function callAdvisor(input: ConsultCallInput): Promise<ConsultCallR
 				usage: response.usage ? { input: response.usage.input, output: response.usage.output, total: response.usage.totalTokens } : undefined,
 				stopReason: response.stopReason,
 				errorMessage: response.errorMessage,
+				effortAdjusted,
 			};
 		}
 	}
@@ -133,5 +169,6 @@ export async function callAdvisor(input: ConsultCallInput): Promise<ConsultCallR
 			: undefined,
 		stopReason: response.stopReason,
 		errorMessage: response.errorMessage,
+		effortAdjusted,
 	};
 }

@@ -17,6 +17,7 @@ import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
 import { loadJsonConfig, saveJsonConfig, validateConfig } from "@juicesharp/rpiv-config";
 import { type Static, type TObject, Type } from "typebox";
+import { Value } from "typebox/value";
 
 // ---------------------------------------------------------------------------
 // Primitives
@@ -49,10 +50,25 @@ const ConsultModeSchema = Type.Union(
 /** A consultation mode: solo, council, debate, or gut-check. */
 export type ConsultMode = Static<typeof ConsultModeSchema>;
 
+const BackendSchema = Type.Object(
+	{
+		type: Type.Optional(Type.Union([Type.Literal("inline"), Type.Literal("cli")])),
+		command: Type.Optional(Type.String()),
+		args: Type.Optional(Type.Array(Type.String())),
+		timeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
+		// Custom CLIs need a declared window; presets may override their cap.
+		contextWindow: Type.Optional(Type.Integer({ minimum: 0 })),
+	},
+	{ additionalProperties: true },
+);
+
 /** A provider/model string plus an optional effort. Shared by every mode entry. */
 const ModelEntrySchema = Type.Object(
 	{
 		model: Type.Optional(Type.String({ description: 'provider/model key, e.g. "anthropic/claude-sonnet-4-6"' })),
+		backend: Type.Optional(BackendSchema),
+		cliModels: Type.Optional(Type.Record(Type.String(), Type.String())),
+		cliWindows: Type.Optional(Type.Record(Type.String(), Type.Integer({ minimum: 1 }))),
 		thinkingLevel: Type.Optional(ThinkingLevelSchema),
 		feedbackMode: Type.Optional(FeedbackModeSchema),
 	},
@@ -66,6 +82,10 @@ const ModelEntrySchema = Type.Object(
 const SoloModeSchema = Type.Object(
 	{
 		model: Type.Optional(Type.String()),
+		backend: Type.Optional(BackendSchema),
+		codexModel: Type.Optional(Type.String()),
+		cliModels: Type.Optional(Type.Record(Type.String(), Type.String())),
+		cliWindows: Type.Optional(Type.Record(Type.String(), Type.Integer({ minimum: 1 }))),
 		thinkingLevel: Type.Optional(ThinkingLevelSchema),
 		feedbackMode: Type.Optional(FeedbackModeSchema),
 		// terse is honored when gut-check merges its config into solo. Caps the
@@ -78,6 +98,10 @@ const SoloModeSchema = Type.Object(
 const GutCheckModeSchema = Type.Object(
 	{
 		model: Type.Optional(Type.String()),
+		backend: Type.Optional(BackendSchema),
+		codexModel: Type.Optional(Type.String()),
+		cliModels: Type.Optional(Type.Record(Type.String(), Type.String())),
+		cliWindows: Type.Optional(Type.Record(Type.String(), Type.Integer({ minimum: 1 }))),
 		thinkingLevel: Type.Optional(ThinkingLevelSchema),
 		terse: Type.Optional(Type.Boolean()),
 		feedbackMode: Type.Optional(FeedbackModeSchema),
@@ -121,25 +145,16 @@ const ModesSchema = Type.Object(
 // Personas / backends (open — user-defined names must survive cleaning)
 // ---------------------------------------------------------------------------
 
-const BackendSchema = Type.Object(
-	{
-		type: Type.Optional(Type.Union([Type.Literal("inline"), Type.Literal("cli")])),
-		command: Type.Optional(Type.String()),
-		args: Type.Optional(Type.Array(Type.String())),
-		timeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
-		// Declared context window for a custom CLI (council §3). Preset commands
-		// don't need this; a custom command must declare it or the member pre-fails.
-		contextWindow: Type.Optional(Type.Integer({ minimum: 0 })),
-	},
-	{ additionalProperties: true },
-);
-
 const PersonaSchema = Type.Object(
 	{
 		name: Type.Optional(Type.String()),
 		systemPrompt: Type.Optional(Type.String()),
 		stance: Type.Optional(Type.Union([Type.Literal("for"), Type.Literal("against"), Type.Literal("neutral")])),
 		defaultModel: Type.Optional(Type.String()),
+		/** Codex CLI model override; absent means use Codex's configured default. */
+		codexModel: Type.Optional(Type.String()),
+		cliModels: Type.Optional(Type.Record(Type.String(), Type.String())),
+		cliWindows: Type.Optional(Type.Record(Type.String(), Type.Integer({ minimum: 1 }))),
 		thinkingLevel: Type.Optional(ThinkingLevelSchema),
 		// Persona-scoped backend (council §1): takes precedence over the legacy
 		// model-key `backends` map so two personas on the same model can route
@@ -313,18 +328,24 @@ export interface LoadConfigOptions {
  * extension at startup.
  */
 export function loadConfig(options: LoadConfigOptions = {}): BpxConsultConfig {
-	const globalRaw = loadJsonConfig<unknown>(bpxConfigPath());
-	let mergedRaw = globalRaw;
+	const global = validatedLayer(loadJsonConfig<unknown>(bpxConfigPath()));
+	let merged: unknown = global;
 
 	const trusted = options.projectTrusted ?? true;
 	if (trusted && options.cwd) {
-		const pPath = projectConfigPath(options.cwd);
-		const projectRaw = loadJsonConfig<unknown>(pPath);
-		mergedRaw = deepMerge(globalRaw, projectRaw);
+		const project = validatedLayer(loadJsonConfig<unknown>(projectConfigPath(options.cwd)));
+		merged = deepMerge(global, project);
 	}
 
-	const validated = validateConfig(BpxConsultConfigSchema as TObject, mergedRaw);
-	return mergeDefaults(validated);
+	return mergeDefaults(validateConfig(BpxConsultConfigSchema as TObject, merged));
+}
+
+/** Reject one invalid config layer before it can override valid settings. */
+function validatedLayer(raw: unknown): BpxConsultConfig {
+	try {
+		if (!isObject(raw) || !Value.Check(BpxConsultConfigSchema, raw)) return {};
+		return validateConfig(BpxConsultConfigSchema as TObject, raw);
+	} catch { return {}; }
 }
 
 /**
@@ -485,24 +506,42 @@ export function resolveBackend(config: BpxConsultConfig, modelKey: string | unde
  */
 export function resolvePersonaBackend(
 	config: BpxConsultConfig,
-	persona: { backend?: unknown; defaultModel?: string },
-): { type: "cli"; command: string; args?: string[]; timeoutMs?: number; contextWindow?: number } | { type: "inline" } | undefined {
-	const pb = persona.backend;
+	persona: { backend?: unknown; defaultModel?: string; codexModel?: string; cliModels?: Record<string, string>; cliWindows?: Record<string, number> },
+): { type: "cli"; command: string; args?: string[]; timeoutMs?: number; contextWindow?: number; model?: string } | { type: "inline" } | undefined {
+	return resolveSeatBackend(config, { ...persona, model: persona.defaultModel });
+}
+
+/** Resolve a mode or persona seat without coupling CLI execution to Pi's registry. */
+export function resolveSeatBackend(
+	config: BpxConsultConfig,
+	seat: { backend?: unknown; model?: string; codexModel?: string; cliModels?: Record<string, string>; cliWindows?: Record<string, number> },
+): ReturnType<typeof resolveBackend> & { model?: string } | undefined {
+	const pb = seat.backend;
+	let backend: ReturnType<typeof resolveBackend>;
 	if (pb && typeof pb === "object") {
 		const entry = pb as { type?: string; command?: unknown; args?: unknown; timeoutMs?: unknown; contextWindow?: unknown };
 		if (entry.type === "cli") {
-			return {
+			backend = {
 				type: "cli",
 				command: typeof entry.command === "string" ? entry.command : "codex",
 				args: Array.isArray(entry.args) ? entry.args : undefined,
 				timeoutMs: typeof entry.timeoutMs === "number" ? entry.timeoutMs : undefined,
 				contextWindow: typeof entry.contextWindow === "number" ? entry.contextWindow : undefined,
 			};
+		} else if (entry.type === "inline") {
+			return { type: "inline" };
 		}
-		if (entry.type === "inline") return { type: "inline" };
 	}
 	// Legacy: model-key-scoped `backends[defaultModel]`.
-	return resolveBackend(config, persona.defaultModel);
+	backend ??= resolveBackend(config, seat.model);
+	if (backend?.type === "cli" && !backend.args?.length) {
+		const selected = seat.cliModels?.[backend.command] ?? (backend.command === "codex" ? seat.codexModel : undefined);
+		if (selected?.trim()) {
+			const window = seat.cliWindows?.[`${backend.command}:${selected.trim()}`];
+			return { ...backend, model: selected.trim(), contextWindow: backend.contextWindow ?? window };
+		}
+	}
+	return backend;
 }
 
 export function isDisabledForModel(

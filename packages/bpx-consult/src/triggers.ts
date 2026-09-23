@@ -35,6 +35,7 @@ import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { BpxConsultConfig, ConsultMode } from "./config.js";
 import { loadConfig, resolveFeedbackMode } from "./config.js";
 import { executeSolo } from "./solo.js";
+import { gutCheckConfig } from "./gut-check.js";
 import { executeCouncil } from "./council.js";
 import { executeDebate } from "./debate.js";
 import { deliver } from "./deliver.js";
@@ -291,17 +292,7 @@ interface RunModeInput {
 async function runMode(mode: ConsultMode, input: RunModeInput): Promise<AgentToolResult<unknown>> {
 	if (mode === "council") return executeCouncil(input);
 	if (mode === "debate") return executeDebate(input);
-	if (mode === "gut-check") {
-		const gutCheck = input.config.modes?.gutCheck;
-		if (gutCheck?.model) {
-			const gutConfig = {
-				...input.config,
-				modes: { ...input.config.modes, solo: { ...input.config.modes?.solo, ...gutCheck } },
-			};
-			return executeSolo({ ...input, config: gutConfig });
-		}
-		return executeSolo(input);
-	}
+	if (mode === "gut-check") return executeSolo({ ...input, config: gutCheckConfig(input.config) });
 	return executeSolo(input);
 }
 

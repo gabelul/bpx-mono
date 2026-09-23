@@ -18,6 +18,7 @@
 
 import type { Message } from "@earendil-works/pi-ai";
 import { spawn } from "node:child_process";
+import { deriveInputBudget, estimateTokens } from "./context-engine.js";
 import { withTimeout } from "./timeout.js";
 
 export type CliCommand = "codex" | "claude" | "opencode";
@@ -25,8 +26,8 @@ export type CliCommand = "codex" | "claude" | "opencode";
 /** Pre-baked invocations. Read prompt from stdin (`-` or `-p`). */
 const CLI_INVOCATIONS: Record<CliCommand, { command: string; args: string[] }> = {
 	codex: { command: "codex", args: ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "-"] },
-	claude: { command: "claude", args: ["-p"] },
-	opencode: { command: "opencode", args: ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "-"] },
+	claude: { command: "claude", args: ["-p", "--tools", ""] },
+	opencode: { command: "opencode", args: ["run", "--format", "json", "--pure", "--agent", "bpx-consult"] },
 };
 
 export interface CliBackendConfig {
@@ -34,6 +35,8 @@ export interface CliBackendConfig {
 	command: CliCommand | string;
 	args?: string[];
 	timeoutMs?: number;
+	/** Preset CLI model override. Omit to use the CLI's configured default. */
+	model?: string;
 	/** Declared context window (tokens) for a custom CLI whose underlying model
 	 * isn't known. Preset commands (codex/claude/opencode) have built-in windows
 	 * and don't need this; a custom command MUST declare one or the member is
@@ -50,6 +53,8 @@ export interface CliCallInput {
 	signal: AbortSignal | undefined;
 	/** Working directory for the subprocess (usually ctx.cwd). */
 	cwd?: string;
+	/** Reply reserve used by the context fitter; defaults to 4096 for probes. */
+	responseReserveTokens?: number;
 }
 
 export interface CliCallResult {
@@ -76,13 +81,31 @@ const DEFAULT_CLI_TIMEOUT_MS = 120_000;
  */
 export async function callCliAdvisor(input: CliCallInput): Promise<CliCallResult> {
 	const { systemPrompt, messages, backend, signal, cwd } = input;
+	if (backend.model && (backend.args?.length || !Object.hasOwn(CLI_INVOCATIONS, backend.command))) {
+		return { text: "", timedOut: false, exitCode: null, errorMessage: "CLI model override requires a supported preset without custom args" };
+	}
 	const inv = resolveInvocation(backend);
 	const promptText = buildPromptText(systemPrompt, messages);
+	const window = cliContextWindow(backend);
+	if (window) {
+		const inputBudget = deriveInputBudget(window, { responseReserveTokens: input.responseReserveTokens ?? 4096 });
+		const promptTokens = estimateTokens(promptText);
+		if (promptTokens > inputBudget) {
+			return { text: "", timedOut: false, exitCode: null,
+				errorMessage: `CLI "${inv.command}" serialized prompt needs ~${promptTokens} tokens, over its ${window}-token context window input budget (${inputBudget}); nothing was sent` };
+		}
+	}
 	const timeoutMs = backend.timeoutMs && backend.timeoutMs > 0 ? backend.timeoutMs : DEFAULT_CLI_TIMEOUT_MS;
 
 	// Race the subprocess against a wall-clock timeout that fires its own abort
 	// controller (linked to the parent signal so user-abort still propagates).
-	const outcome = await withTimeout(timeoutMs, signal, (timeoutSignal) => runSpawn(inv, promptText, cwd, timeoutSignal));
+	let childCall: ReturnType<typeof runSpawn> | undefined;
+	const outcome = await withTimeout(timeoutMs, signal, (timeoutSignal) => {
+		childCall = runSpawn(inv, promptText, cwd, timeoutSignal, backend);
+		return childCall;
+	});
+	// withTimeout races the abort; wait for this child to close before reporting it.
+	if (!outcome.ok && childCall) await childCall.catch(() => {});
 
 	if (outcome.timedOut) {
 		return { text: "", timedOut: true, exitCode: null, errorMessage: `CLI "${inv.command}" timed out after ${timeoutMs}ms` };
@@ -97,11 +120,17 @@ export async function callCliAdvisor(input: CliCallInput): Promise<CliCallResult
 	// FR5 branch order (from rpiv-args): non-zero exit here. (Timeout is handled
 	// above via withTimeout aborting the subprocess; a kill surfaces as a throw.)
 	if (code !== 0) {
-		const detail = truncate(outcome.value.stderr || stdout, 500);
+		const output = outcome.value.stderr || stdout;
+		const lastError = backend.command === "codex"
+			? output.split(/\r?\n/).reverse().find((line) => /^ERROR:/i.test(line.trim()))
+			: undefined;
+		const detail = truncate(lastError ?? output, 500);
 		return { text: "", timedOut: false, exitCode: code, errorMessage: `CLI "${inv.command}" exited ${code}${detail ? `: ${detail}` : ""}` };
 	}
 
-	const text = parseCliOutput(stdout, backend.command as CliCommand);
+	// Custom OpenCode argv may use the old JSONL/plain-text contract, not our preset's `text` events.
+	const format = backend.command === "opencode" && backend.args?.length ? "codex" : backend.command;
+	const text = parseCliOutput(stdout, format as CliCommand);
 	if (!text.trim()) {
 		return { text: "", timedOut: false, exitCode: 0, errorMessage: `CLI "${inv.command}" returned no usable output` };
 	}
@@ -114,41 +143,116 @@ function runSpawn(
 	promptText: string,
 	cwd: string | undefined,
 	signal: AbortSignal,
+	backend: CliBackendConfig,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
 	return new Promise((resolve, reject) => {
+		if (signal.aborted) { reject(signal.reason ?? new Error("CLI aborted")); return; }
 		let child;
 		try {
-			child = spawn(inv.command, inv.args, { cwd, stdio: ["pipe", "pipe", "pipe"], signal });
-		} catch (e) {
-			reject(e);
-			return;
-		}
-
+			const env = backend.command === "opencode" && !backend.args?.length ? openCodeAdvisorEnv() : process.env;
+			child = spawn(inv.command, inv.args, { cwd, stdio: ["pipe", "pipe", "pipe"], env, detached: process.platform !== "win32" });
+		} catch (error) { reject(error); return; }
 		let stdout = "";
 		let stderr = "";
-		child.stdout?.on("data", (d) => { stdout += d.toString(); });
-		child.stderr?.on("data", (d) => { stderr += d.toString(); });
-
-		child.on("error", reject); // ENOENT etc.
-		child.on("close", (code) => resolve({ stdout, stderr, code: code ?? 0 }));
-
-		// Write the prompt to stdin and close it so the CLI knows input is complete.
-		child.stdin?.on("error", reject);
+		let failure: Error | undefined;
+		let closed = false;
+		let exitCode: number | null = null;
+		let exitSignal: NodeJS.Signals | null = null;
+		let cleanupDone = false;
+		let settled = false;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		let closeTimer: ReturnType<typeof setTimeout> | undefined;
+		const killTree = (signalName: NodeJS.Signals) => {
+			try {
+				if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signalName);
+				else child.kill(signalName);
+			} catch { /* Process group already exited. */ }
+		};
+		const finish = () => {
+			if (settled || (!closed && !cleanupDone) || (signal.aborted && !cleanupDone)) return;
+			settled = true;
+			signal.removeEventListener("abort", onAbort);
+			if (killTimer) clearTimeout(killTimer);
+			if (closeTimer) clearTimeout(closeTimer);
+			if (signal.aborted) reject(signal.reason ?? new Error("CLI aborted"));
+			else if (failure) reject(failure);
+			else if (exitCode === null) reject(new Error(`CLI terminated by signal ${exitSignal ?? "unknown"}`));
+			else resolve({ stdout, stderr, code: exitCode });
+		};
+		const onAbort = () => {
+			killTree("SIGTERM");
+			// Parent can exit 0 while a descendant still owns stdout. Kill the group
+			// regardless of the parent's exit status, then wait for pipe closure.
+			killTimer = setTimeout(() => {
+				killTree("SIGKILL");
+				cleanupDone = true;
+				if (closed) finish();
+				else closeTimer = setTimeout(finish, 1_000);
+			}, 500);
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		child.stdout?.setEncoding("utf8");
+		child.stderr?.setEncoding("utf8");
+		child.stdout?.on("data", (d: string) => { stdout += d; });
+		child.stderr?.on("data", (d: string) => { stderr += d; });
+		child.on("error", (error) => { failure = error; });
+		child.stdin?.on("error", (error) => { failure = error; killTree("SIGTERM"); });
+		child.on("close", (code, killedBy) => {
+			closed = true;
+			exitCode = code;
+			exitSignal = killedBy;
+			finish();
+		});
 		child.stdin?.end(promptText);
 	});
+}
+
+/** Add a subprocess-only no-tool agent without replacing user provider config. */
+function openCodeAdvisorEnv(): NodeJS.ProcessEnv {
+	let base: Record<string, unknown> = {};
+	if (process.env.OPENCODE_CONFIG_CONTENT) {
+		let parsed: unknown;
+		try { parsed = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT); }
+		catch { throw new Error("OPENCODE_CONFIG_CONTENT is invalid JSON; refusing to replace it"); }
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("OPENCODE_CONFIG_CONTENT must be a JSON object");
+		}
+		base = parsed as Record<string, unknown>;
+	}
+	const permissions = Object.fromEntries(
+		["*", "read", "bash", "edit", "glob", "grep", "webfetch", "websearch", "task", "skill", "lsp"].map((name) => [name, "deny"]),
+	);
+	const agents = base.agent && typeof base.agent === "object" && !Array.isArray(base.agent)
+		? base.agent as Record<string, unknown> : {};
+	return {
+		...process.env,
+		OPENCODE_PERMISSION: JSON.stringify(permissions),
+		OPENCODE_CONFIG_CONTENT: JSON.stringify({ ...base, agent: { ...agents, "bpx-consult": {
+			description: "Read-only advisor; answer from the supplied transcript without tools.", mode: "primary", permission: permissions,
+		} } }),
+	};
 }
 
 // ---------------------------------------------------------------------------
 // Invocation resolution
 // ---------------------------------------------------------------------------
 
-function resolveInvocation(backend: CliBackendConfig): { command: string; args: string[] } {
+/** Resolve preset argv; custom args remain authoritative and are never rewritten. */
+export function resolveInvocation(backend: CliBackendConfig): { command: string; args: string[] } {
 	// Custom command path: user specified a command + args verbatim.
 	if (backend.args && backend.args.length > 0) {
 		return { command: String(backend.command), args: backend.args };
 	}
-	const preset = CLI_INVOCATIONS[backend.command as CliCommand];
-	if (preset) return preset;
+	const preset = Object.hasOwn(CLI_INVOCATIONS, backend.command)
+		? CLI_INVOCATIONS[backend.command as CliCommand] : undefined;
+	if (preset) {
+		const args = [...preset.args];
+		if (backend.model) {
+			if (backend.command === "codex") args.splice(-1, 0, "-m", backend.model);
+			else args.push("--model", backend.model);
+		}
+		return { command: preset.command, args };
+	}
 	// Unknown command name with no preset and no args — treat the string itself
 	// as a bare command (user-defined CLI).
 	return { command: String(backend.command), args: [] };
@@ -207,16 +311,24 @@ export function parseCliOutput(stdout: string, command: CliCommand): string {
 	const trimmed = stdout.trim();
 	if (!trimmed) return "";
 
-	// JSONL producers: collect text from every parseable line that carries it.
-	if (command === "codex" || command === "opencode") {
+	if (command === "opencode") {
+		// `opencode run --format json` emits completed answer parts as `text`
+		// events. Never return raw JSON events or tool output as advisor prose.
+		return trimmed.split("\n").map((line) => {
+			try {
+				const event = JSON.parse(line) as { type?: string; part?: { text?: unknown } };
+				return event.type === "text" && typeof event.part?.text === "string" ? event.part.text : "";
+			} catch { return ""; }
+		}).filter(Boolean).join("\n");
+	}
+	if (command === "codex") {
 		const collected: string[] = [];
 		for (const line of trimmed.split("\n")) {
 			const payload = extractJsonlText(line.trim());
 			if (payload) collected.push(payload);
 		}
 		if (collected.length > 0) return collected.join("\n");
-		// Fall through to plain text if no JSONL payload was found — some codex
-		// builds print plain text despite the documented JSONL contract.
+		// Some Codex builds print plain text instead of JSONL.
 	}
 
 	// Plain text: return as-is (already trimmed).
@@ -268,14 +380,13 @@ function truncate(s: string, max: number): string {
 
 /**
  * Known context windows for the preset CLI commands (the underlying models'
- * real windows). Codex runs GPT-5-tier, Claude CLI runs Claude, OpenCode
- * routes to a configured model — all ~200k. Conservative and safe; a user can
- * override per-backend with `contextWindow` in config if they know better.
+ * real windows). Codex and Claude presets default to 200k. OpenCode routes
+ * to arbitrary providers and needs discovered model metadata or a declared
+ * contextWindow; guessing a capacity risks forwarding an oversized prompt.
  */
 export const CLI_WINDOW_PRESETS: Record<string, number> = {
 	codex: 200_000,
 	claude: 200_000,
-	opencode: 200_000,
 };
 
 /**
@@ -286,5 +397,5 @@ export const CLI_WINDOW_PRESETS: Record<string, number> = {
  */
 export function cliContextWindow(backend: CliBackendConfig): number | undefined {
 	if (typeof backend.contextWindow === "number" && backend.contextWindow > 0) return backend.contextWindow;
-	return CLI_WINDOW_PRESETS[backend.command];
+	return Object.hasOwn(CLI_WINDOW_PRESETS, backend.command) ? CLI_WINDOW_PRESETS[backend.command] : undefined;
 }

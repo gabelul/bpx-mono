@@ -31,7 +31,8 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
-import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
+import { resolveAdvisor } from "./advisor.js";
+import { callSeatRoute, resolveSeatRoute, type ResolvedRoute } from "./route.js";
 import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSummary } from "./context-engine.js";
 import type { BpxConsultConfig } from "./config.js";
 import { personaSystemPrompt, resolvePersona } from "./personas.js";
@@ -87,15 +88,15 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		return err(`Unknown persona "${missing}". Check modes.debate in config.`, emptyDetails(config));
 	}
 
-	const advocate = resolveAdvisor(ctx, advocatePersona.defaultModel ?? config.modes?.solo?.model);
-	const critic = resolveAdvisor(ctx, criticPersona.defaultModel ?? config.modes?.solo?.model);
+	const advocate = resolveSeatRoute(config, { ...config.personas?.[advocatePersona.name], model: advocatePersona.defaultModel ?? config.modes?.solo?.model }, (key) => resolveAdvisor(ctx, key));
+	const critic = resolveSeatRoute(config, { ...config.personas?.[criticPersona.name], model: criticPersona.defaultModel ?? config.modes?.solo?.model }, (key) => resolveAdvisor(ctx, key));
 	const synthKey = config.modes?.council?.synthesizer?.model ?? config.modes?.solo?.model;
-	const synth = resolveAdvisor(ctx, synthKey);
-	if (!advocate || !critic || !synth) {
+	const synth = resolveSeatRoute(config, { ...config.modes?.council?.synthesizer, model: synthKey }, (key) => resolveAdvisor(ctx, key));
+	if (advocate.kind === "error" || critic.kind === "error" || synth.kind === "error") {
 		const unresolved = [
-			!advocate && `advocate (${advocatePersona.defaultModel ?? config.modes?.solo?.model})`,
-			!critic && `critic (${criticPersona.defaultModel ?? config.modes?.solo?.model})`,
-			!synth && `synthesizer (${synthKey})`,
+			advocate.kind === "error" && `advocate (${advocate.message})`,
+			critic.kind === "error" && `critic (${critic.message})`,
+			synth.kind === "error" && `synthesizer (${synth.message})`,
 		].filter(Boolean).join("; ");
 		return err(`Could not resolve debate models: ${unresolved}.`, emptyDetails(config));
 	}
@@ -125,7 +126,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 
 	// The debate transcript grows each round — re-fit per call to the smaller of
 	// the two debaters' windows so the last round can't overflow (§C invariant).
-	const fitWindow = Math.min(advocate.model.contextWindow, critic.model.contextWindow);
+	const fitWindow = Math.min(advocate.contextWindow, critic.contextWindow);
 
 	function fitWithContext(extra: string): Message[] {
 		const fit = buildConsultContext({
@@ -134,6 +135,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 			budget: contextBudget,
 			directive: [directive, extra].filter(Boolean).join("\n\n") || undefined,
 		});
+		if (fit.error) throw new Error(`Debate window failed: ${fit.error}`);
 		// Record the ledger from the seed fit (the transcript is the same each round;
 		// only the framing `extra` grows, so the roll-up is representative). Telemetry
 		// for the §E gate — surfaced in details.ledger.
@@ -164,9 +166,9 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 	try {
 		// Round 1: advocate opens with the strongest FOR case.
 		pushStep(1, "advocate", "running");
-		const r1Advocate = await callStep(ctx, advocate, advocatePersona.systemPrompt, fitWithContext(
+		const r1Advocate = await callStep(ctx, advocate, personaSystemPrompt(advocatePersona), fitWithContext(
 			"OPENING: make the strongest case FOR the position under debate.",
-		), advocatePersona.thinkingLevel, debateSignal, sessionId);
+		), advocatePersona.thinkingLevel, debateSignal, sessionId, contextBudget.responseReserveTokens);
 		if (!r1Advocate.ok) { pushStep(1, "advocate", "error"); return bail(`Round 1 advocate failed: ${r1Advocate.error}`); }
 		roundLog.push(`### Round 1 — Advocate (FOR)\n${r1Advocate.text}`);
 		pushStep(1, "advocate", "ok");
@@ -183,7 +185,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 				pushStep(round, "advocate", "running");
 				const rebut = await callStep(ctx, advocate, personaSystemPrompt(advocatePersona), fitWithContext(
 					ADVOCATE_REBUT_FRAME(lastCriticText ?? ""),
-				), advocatePersona.thinkingLevel, debateSignal, sessionId);
+				), advocatePersona.thinkingLevel, debateSignal, sessionId, contextBudget.responseReserveTokens);
 				if (!rebut.ok) { pushStep(round, "advocate", "error"); return bail(`Round ${round} advocate rebuttal failed: ${rebut.error}`); }
 				roundLog.push(`### Round ${round} — Advocate Rebuttal (FOR)\n${rebut.text}`);
 				pushStep(round, "advocate", "ok");
@@ -194,7 +196,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 			pushStep(round, "critic", "running");
 			const attack = await callStep(ctx, critic, personaSystemPrompt(criticPersona), fitWithContext(
 				CRITIC_ATTACK_FRAME(lastAdvocateText),
-			), criticPersona.thinkingLevel, debateSignal, sessionId);
+			), criticPersona.thinkingLevel, debateSignal, sessionId, contextBudget.responseReserveTokens);
 			if (!attack.ok) { pushStep(round, "critic", "error"); return bail(`Round ${round} critic attack failed: ${attack.error}`); }
 			roundLog.push(`### Round ${round} — Critic (AGAINST)\n${attack.text}`);
 			pushStep(round, "critic", "ok");
@@ -210,17 +212,18 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 
 		// Re-fit the synthesizer input to its own window (it may be larger than
 		// the debaters', but the grown transcript can still be substantial).
-		const synthFitWindow = Math.min(synth.model.contextWindow, fitWindow * 2);
+		const synthFitWindow = Math.min(synth.contextWindow, fitWindow * 2);
 		const synthFit = buildConsultContext({
 			sessionMessages: [{ role: "user", content: synthInput, timestamp: Date.now() }],
 			advisorContextWindow: synthFitWindow,
 			budget: contextBudget,
 		});
+		if (synthFit.error) return bail(`Debate synthesizer window failed: ${synthFit.error}`);
 		details.finalTranscriptTokens = synthFit.estimatedTokens;
 
-		const synthResult = await callAdvisor({
+		const synthResult = await callSeatRoute({
 			ctx,
-			advisor: synth,
+			route: synth,
 			systemPrompt: SYNTHESIZER_SYSTEM_PROMPT,
 			messages: synthFit.messages,
 			thinkingLevel: config.modes?.council?.synthesizer?.thinkingLevel,
@@ -268,22 +271,24 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 
 async function callStep(
 	ctx: ExtensionContext,
-	advisor: ResolvedAdvisor,
+	route: Exclude<ResolvedRoute, { kind: "error" }>,
 	systemPrompt: string,
 	messages: Message[],
 	thinkingLevel: import("@earendil-works/pi-ai").ThinkingLevel | undefined,
 	signal: AbortSignal | undefined,
 	sessionId: string | undefined,
+	responseReserveTokens: number,
 ): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
 	try {
-		const result = await callAdvisor({
+		const result = await callSeatRoute({
 			ctx,
-			advisor,
+			route,
 			systemPrompt,
 			messages,
 			thinkingLevel,
 			signal,
 			sessionId,
+			maxTokens: responseReserveTokens,
 		});
 		// Reject a response that arrived after the signal aborted — the timeout
 		// (or a user abort) fired while we were waiting. The response may be

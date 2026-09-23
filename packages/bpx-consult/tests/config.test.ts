@@ -8,8 +8,11 @@ import {
 	isDisabledForModel,
 	loadConfig,
 	resolveFeedbackMode,
+	resolvePersonaBackend,
+	resolveSeatBackend,
 	saveConfig,
 	bpxConfigPath,
+	projectConfigPath,
 } from "../src/config.js";
 import type { BpxConsultConfig } from "../src/config.js";
 
@@ -50,6 +53,21 @@ describe("loadConfig — fail-soft", () => {
 		const cfg = loadConfig();
 		expect(cfg.defaultMode).toBe("solo");
 		expect(cfg.enabled).toBe(true);
+	});
+
+	it("rejects a wrong-typed global model instead of returning a crashable config", () => {
+		writeFileSync(bpxConfigPath(), JSON.stringify({ modes: { solo: { model: 23 } }, feedbackMode: "pipe" }));
+		const cfg = loadConfig();
+		expect(cfg.modes?.solo?.model).toBe(DEFAULT_CONFIG.modes?.solo?.model);
+		expect(cfg.feedbackMode).toBe(DEFAULT_CONFIG.feedbackMode);
+	});
+
+	it("rejects an invalid project layer without losing valid global settings", () => {
+		const project = join(TMP, "project");
+		mkdirSync(join(project, ".pi"), { recursive: true });
+		writeFileSync(bpxConfigPath(), JSON.stringify({ modes: { solo: { model: "openai/gpt-5" } } }));
+		writeFileSync(projectConfigPath(project), JSON.stringify({ modes: { solo: { model: 23 } } }));
+		expect(loadConfig({ cwd: project, projectTrusted: true }).modes?.solo?.model).toBe("openai/gpt-5");
 	});
 
 	it("returns defaults when the file is a non-object JSON value", () => {
@@ -123,6 +141,64 @@ describe("saveConfig → loadConfig round-trip", () => {
 		const reloaded = loadConfig();
 		expect(reloaded.defaultMode).toBe("gut-check");
 		expect(reloaded.modes?.solo?.model).toBe("google/gemini-2.5-pro");
+	});
+});
+
+describe("Codex persona model selection", () => {
+	it("keeps inline and Codex choices separate across save/load", () => {
+		const cfg = loadConfig();
+		cfg.personas!.critic = {
+			...cfg.personas!.critic,
+			defaultModel: "openai-codex/gpt-6-sol",
+			codexModel: "gpt-5.6-sol",
+			backend: { type: "cli", command: "codex" },
+		};
+		expect(saveConfig(cfg)).toBe(true);
+		const loaded = loadConfig();
+		const critic = loaded.personas!.critic!;
+		expect(resolvePersonaBackend(loaded, critic)).toMatchObject({ type: "cli", command: "codex", model: "gpt-5.6-sol" });
+		expect(critic.defaultModel).toBe("openai-codex/gpt-6-sol");
+		expect(resolvePersonaBackend(loaded, { ...critic, backend: { type: "inline" } })).toEqual({ type: "inline" });
+		expect(resolvePersonaBackend(loaded, critic)?.type).toBe("cli");
+	});
+
+	it("persists per-seat routes and selected models without losing inline keys", () => {
+		const cfg = structuredClone(DEFAULT_CONFIG);
+		cfg.modes!.solo = { model: "pi/solo", backend: { type: "cli", command: "claude" }, cliModels: { claude: "sonnet" } };
+		cfg.modes!.gutCheck = { model: "pi/gut", backend: { type: "cli", command: "opencode", contextWindow: 64000 }, cliModels: { opencode: "zai/glm-4.5-flash" } };
+		cfg.modes!.council!.synthesizer = { model: "pi/synth", backend: { type: "cli", command: "codex" }, cliModels: { codex: "gpt-5.6-sol" } };
+		expect(saveConfig(cfg)).toBe(true);
+		const loaded = loadConfig();
+		expect(loaded.modes?.solo).toMatchObject(cfg.modes!.solo!);
+		expect(loaded.modes?.gutCheck).toMatchObject(cfg.modes!.gutCheck!);
+		expect(loaded.modes?.council?.synthesizer).toMatchObject(cfg.modes!.council!.synthesizer!);
+	});
+
+	it("does not guess OpenCode's window for an unknown model", () => {
+		const cfg: BpxConsultConfig = { modes: { solo: { backend: { type: "cli", command: "opencode" }, cliModels: { opencode: "unknown/model" } } } };
+		const backend = resolveSeatBackend(cfg, cfg.modes!.solo!);
+		expect(backend).toMatchObject({ type: "cli", command: "opencode", model: "unknown/model" });
+		expect(backend).not.toHaveProperty("contextWindow", expect.any(Number));
+	});
+
+	it("keeps per-preset model selections separate across modes and backend switches", () => {
+		const cfg: BpxConsultConfig = {
+			modes: {
+				solo: { model: "pi/inline", backend: { type: "cli", command: "claude" }, cliModels: { claude: "sonnet", opencode: "anthropic/haiku" } },
+				gutCheck: { model: "pi/cheap", backend: { type: "cli", command: "opencode" }, cliModels: { opencode: "opencode/cheap" } },
+			},
+		};
+		expect(resolveSeatBackend(cfg, cfg.modes!.solo!)).toMatchObject({ command: "claude", model: "sonnet" });
+		expect(resolveSeatBackend(cfg, { ...cfg.modes!.solo, backend: { type: "cli", command: "opencode" } })).toMatchObject({ command: "opencode", model: "anthropic/haiku" });
+		expect(resolveSeatBackend(cfg, cfg.modes!.gutCheck!)).toMatchObject({ command: "opencode", model: "opencode/cheap" });
+		expect(resolveSeatBackend(cfg, { ...cfg.modes!.solo, backend: { type: "inline" } })).toEqual({ type: "inline" });
+	});
+
+	it("leaves old unpinned configs unchanged and does not apply the choice to custom args", () => {
+		const cfg: BpxConsultConfig = { backends: { "openai/codex": { type: "cli", command: "codex" } } };
+		expect(resolvePersonaBackend(cfg, { defaultModel: "openai/codex" })).toEqual({ type: "cli", command: "codex", args: undefined, timeoutMs: undefined, contextWindow: undefined });
+		expect(resolvePersonaBackend(cfg, { defaultModel: "openai/codex", codexModel: "gpt-5.6-sol" })).toMatchObject({ model: "gpt-5.6-sol" });
+		expect(resolvePersonaBackend(cfg, { backend: { type: "cli", command: "codex", args: ["exec", "-"] }, codexModel: "gpt-5.6-sol" })).not.toHaveProperty("model");
 	});
 });
 
