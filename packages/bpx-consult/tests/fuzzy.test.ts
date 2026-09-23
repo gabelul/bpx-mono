@@ -70,6 +70,15 @@ describe("filterItems", () => {
 		]);
 	});
 
+	it("ranks the named control ahead of a setting that merely mentions it", () => {
+		const menu = [
+			{ value: "defaultMode", label: "Default mode: solo" },
+			{ value: "solo.detail", label: "Solo — inline/model" },
+		];
+		expect(filterItems(menu, "Solo")[0]?.value).toBe("solo.detail");
+		expect(filterItems(menu, "solo.detail")[0]?.value).toBe("solo.detail");
+	});
+
 	it("drops items that do not match", () => {
 		// "glm-4" is a subsequence of only the GLM value; "glm" alone would also
 		// catch gemini (g→l→m), so use the more specific query to assert dropping.

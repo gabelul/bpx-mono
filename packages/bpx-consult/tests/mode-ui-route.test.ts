@@ -90,6 +90,29 @@ describe("backend-first mode editor", () => {
 		expect(saved.modes.council.members).toContain("reviewer");
 	});
 
+	it("does not announce a Council seat change if saving fails", async () => {
+		const config = structuredClone(DEFAULT_CONFIG);
+		mocked.save.mockReturnValue(false);
+		vi.mocked(ctx.ui.notify).mockReset();
+		mocked.pick.mockResolvedValueOnce("council.manage").mockResolvedValueOnce("seats")
+			.mockResolvedValueOnce("architect").mockResolvedValueOnce("__done__");
+		await runConsultConfigurator(ctx, { config });
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("wasn't kept"), "error");
+		expect(vi.mocked(ctx.ui.notify).mock.calls.some(([message]) => String(message).includes("Unseated architect"))).toBe(false);
+	});
+
+	it("cancels a custom CLI setup when the arguments input is dismissed", async () => {
+		const config = structuredClone(DEFAULT_CONFIG);
+		mocked.pick.mockResolvedValueOnce("solo.detail").mockResolvedValueOnce("backend")
+			.mockResolvedValueOnce("__custom__").mockResolvedValueOnce("__back__")
+			.mockResolvedValueOnce("__done__");
+		vi.mocked(ctx.ui.input).mockResolvedValueOnce("/tmp/fake-cli").mockResolvedValueOnce(undefined);
+		await runConsultConfigurator(ctx, { config });
+		expect(ctx.ui.input).toHaveBeenCalledTimes(2);
+		expect(mocked.callCli).not.toHaveBeenCalled();
+		expect(mocked.save).not.toHaveBeenCalled();
+	});
+
 	it("preselects a saved OpenCode model when returning from Claude", async () => {
 		const config = structuredClone(DEFAULT_CONFIG);
 		config.modes!.solo!.backend = { type: "cli", command: "claude" };

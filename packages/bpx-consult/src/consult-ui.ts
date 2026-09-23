@@ -692,14 +692,14 @@ function defaultPersonaPrompt(name: string): string {
 /**
  * AI-generated persona flow: describe focus → pick generator model → model
  * drafts {name, stance, systemPrompt} → confirm or regenerate → create + seat
- * on the generator model. Returns true if a persona was created (caller
- * persists + reloads), false otherwise (cancel / parse failure).
+ * on the generator model. Returns created persona details for the caller to
+ * persist and announce, or false on cancel / parse failure.
  */
 async function runGeneratePersona(
 	ctx: ExtensionContext,
 	config: BpxConsultConfig,
 	available: Model<Api>[],
-): Promise<boolean> {
+): Promise<{ name: string; stance: string; modelKey: string } | false> {
 	const description = (await ctx.ui.input("Describe this advisor's focus", "e.g. security vulnerabilities, cost and ROI, API design"))?.trim();
 	if (!description) return false;
 
@@ -788,8 +788,7 @@ async function runGeneratePersona(
 			members = [...members, name];
 			config.modes.council!.members = members;
 		}
-		ctx.ui.notify(`Added + seated ${name} (${stance}, ${describeModel(genKey)})`, "info");
-		return true;
+		return { name, stance, modelKey: genKey };
 	}
 }
 
@@ -864,14 +863,10 @@ export async function runCouncilSubmenu(
 				})),
 			});
 			if (picked === null) continue;
-			if (members.includes(picked)) {
-				config.modes.council!.members = members.filter((n) => n !== picked);
-				ctx.ui.notify(`Unseated ${picked} (persona kept)`, "info");
-			} else {
-				config.modes.council!.members = [...members, picked];
-				ctx.ui.notify(`Seated ${picked}`, "info");
-			}
+			const wasSeated = members.includes(picked);
+			config.modes.council!.members = wasSeated ? members.filter((n) => n !== picked) : [...members, picked];
 			if (!persist(ctx, config, options)) return;
+			ctx.ui.notify(wasSeated ? `Unseated ${picked} (persona kept)` : `Seated ${picked}`, "info");
 			config = loadConfig(options);
 			continue;
 		}
@@ -893,6 +888,7 @@ export async function runCouncilSubmenu(
 				const created = await runGeneratePersona(ctx, config, available);
 				if (created) {
 					if (!persist(ctx, config, options)) return;
+					ctx.ui.notify(`Added + seated ${created.name} (${created.stance}, ${describeModel(created.modelKey)})`, "info");
 					config = loadConfig(options);
 				}
 				continue;
@@ -1296,7 +1292,8 @@ async function runCustomCliFlow(ctx: ExtensionContext, persona: Persona): Promis
 	const command = (await ctx.ui.input("CLI executable (must be on PATH)", "e.g. gemini-cli, qwen, my-agent"))?.trim();
 	if (!command) return null;
 	const argsRaw = await ctx.ui.input("Arguments (comma-separated, or empty)", "e.g. exec, --read-only");
-	const args = parseCliArgs(argsRaw ?? undefined);
+	if (argsRaw === undefined) return null;
+	const args = parseCliArgs(argsRaw);
 	const winRaw = await ctx.ui.input("Context window in tokens (required — no fallback)", "e.g. 200000");
 	const contextWindow = parseContextWindow(winRaw ?? undefined);
 	if (contextWindow === null) {

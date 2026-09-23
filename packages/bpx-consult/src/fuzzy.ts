@@ -55,10 +55,19 @@ export function fuzzyScore(query: string, text: string): number | null {
 export function filterItems(items: SelectItem[], query: string): SelectItem[] {
 	if (query.length === 0) return items;
 
+	const needle = query.toLowerCase();
 	return items
-		.map((item, idx) => ({ item, idx, score: fuzzyScore(query, `${item.label} ${item.value}`) }))
-		.filter((scored): scored is { item: SelectItem; idx: number; score: number } => scored.score !== null)
-		.sort((a, b) => b.score - a.score || a.idx - b.idx)
+		.map((item, idx) => ({
+			item, idx,
+			score: fuzzyScore(query, `${item.label} ${item.value}`),
+			exactValue: item.value.toLowerCase() === needle,
+			labelPrefix: item.label.toLowerCase().startsWith(needle),
+		}))
+		.filter((scored): scored is typeof scored & { score: number } => scored.score !== null)
+		// A control named "Solo" beats "Default mode: solo" even when fuzzy scores tie.
+		.sort((a, b) => Number(b.exactValue) - Number(a.exactValue)
+			|| Number(b.labelPrefix) - Number(a.labelPrefix)
+			|| b.score - a.score || a.idx - b.idx)
 		.map((scored) => scored.item);
 }
 
