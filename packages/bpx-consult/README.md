@@ -34,6 +34,14 @@ pi install npm:@booplex/bpx-consult
 
 Then restart your pi session. The `consult` tool and `/consult` command register automatically.
 
+If you're on a `0.x` install and Pi doesn't show an update notice, install the current release explicitly:
+
+```bash
+pi install npm:@booplex/bpx-consult@latest
+```
+
+Pre-1.0 npm ranges can pin you to an older minor line. Semver: technically correct, spiritually annoying.
+
 <details>
 <summary>Install from source</summary>
 
