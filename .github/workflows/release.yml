@@ -23,9 +23,17 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Force publish current package version to npm'
+        description: 'Force publish current package versions to npm'
         type: boolean
         default: false
+      recover_consult_0_11_0:
+        description: 'One-time consult 0.11.0 release from its tag (not endpoints)'
+        type: boolean
+        default: false
+      recover_consult_sha:
+        description: 'Expected 40-character commit SHA for the consult recovery tag'
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -34,6 +42,7 @@ permissions:
 jobs:
   release-please:
     name: Create or update release PR
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.recover_consult_0_11_0 }}
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
@@ -56,7 +65,7 @@ jobs:
     # leaves the top-level `release_created` empty — which is why the auto-publish
     # silently skipped on the 0.2.0 merge and had to be dispatched by hand. Testing
     # that the array contains our package path fires only on a real release of it.
-    if: ${{ contains(needs.release-please.outputs.paths_released, 'packages/bpx-consult') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    if: ${{ !inputs.recover_consult_0_11_0 && (contains(needs.release-please.outputs.paths_released, 'packages/bpx-consult') || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -93,7 +102,7 @@ jobs:
     # separate job rather than merged into publish-npm so a force-publish of
     # one package can't fail the other (republishing an existing version
     # EPUBLISHes, and npm errors are per-package).
-    if: ${{ contains(needs.release-please.outputs.paths_released, 'packages/bpx-endpoints') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    if: ${{ !inputs.recover_consult_0_11_0 && (contains(needs.release-please.outputs.paths_released, 'packages/bpx-endpoints') || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -116,3 +125,85 @@ jobs:
 
       - name: Publish package
         run: npm publish --workspace @booplex/bpx-endpoints --provenance --access public
+
+  # One-time recovery: release-please did not recognize the merged 0.11.0 manifest PR.
+  recover-consult-0-11-0:
+    name: Recover @booplex/bpx-consult 0.11.0 only
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_consult_0_11_0 }}
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Refuse any other release source
+        env:
+          EXPECTED_SHA: ${{ inputs.recover_consult_sha }}
+          BROAD_PUBLISH: ${{ inputs.publish }}
+        run: |
+          if [ "$BROAD_PUBLISH" = true ] || [ "$GITHUB_REF" != refs/tags/v0.11.0 ] || [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || [ "$GITHUB_SHA" != "$EXPECTED_SHA" ]; then
+            echo 'Consult recovery requires only the v0.11.0 tag and its expected commit SHA.' >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          ref: v0.11.0
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify frozen release source
+        env:
+          EXPECTED_SHA: ${{ inputs.recover_consult_sha }}
+        run: |
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_SHA" ]
+          [ "$(git rev-parse 'refs/tags/v0.11.0^{commit}')" = "$EXPECTED_SHA" ]
+          node <<'NODE'
+          const fs = require('node:fs');
+          const assert = require('node:assert/strict');
+          const pkg = JSON.parse(fs.readFileSync('packages/bpx-consult/package.json'));
+          const lock = JSON.parse(fs.readFileSync('package-lock.json'));
+          const manifest = JSON.parse(fs.readFileSync('.release-please-manifest.json'));
+          assert.equal(pkg.name, '@booplex/bpx-consult');
+          assert.equal(pkg.version, '0.11.0');
+          assert.equal(lock.packages['packages/bpx-consult'].version, '0.11.0');
+          assert.equal(manifest['packages/bpx-consult'], '0.11.0');
+          NODE
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm ci
+      - run: npx tsc --noEmit -p packages/bpx-consult/tsconfig.json
+      - run: npm test --workspace @booplex/bpx-consult
+
+      - name: Pack and inspect the consult tarball
+        id: archive
+        run: |
+          npm pack --workspace @booplex/bpx-consult --ignore-scripts --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/consult-pack.json"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const assert = require('node:assert/strict');
+          const [entry] = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'consult-pack.json')));
+          assert.equal(entry.id, '@booplex/bpx-consult@0.11.0');
+          assert.equal(entry.filename, 'booplex-bpx-consult-0.11.0.tgz');
+          const names = entry.files.map(file => file.path);
+          for (const name of ['package.json', 'README.md', 'CHANGELOG.md', 'index.ts', 'src/share.ts']) {
+            assert(names.includes(name), `Missing package file: ${name}`);
+          }
+          assert(!names.some(name => /(^|\/)(\.env(?:\.|$)|auth\.json$|\._)/.test(name)), 'Unexpected private or AppleDouble file');
+          const archive = path.join(process.env.RUNNER_TEMP, entry.filename);
+          assert(fs.existsSync(archive), 'Packed archive is missing');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `path=${archive}\n`);
+          console.log(`Inspected ${entry.filename} (${names.length} files; ${entry.integrity})`);
+          NODE
+          sha256sum "$RUNNER_TEMP/booplex-bpx-consult-0.11.0.tgz"
+
+      - name: Publish inspected consult tarball
+        env:
+          ARCHIVE: ${{ steps.archive.outputs.path }}
+        run: npm publish "$ARCHIVE" --provenance --access public
