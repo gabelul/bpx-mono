@@ -5,6 +5,24 @@ All notable changes to @booplex/bpx-consult are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0](https://github.com/gabelul/bpx-mono/compare/v0.11.0...v1.0.0) (2026-09-24)
+
+
+### Features
+
+* **bpx-consult:** add consented files and local results ([a050cfc](https://github.com/gabelul/bpx-mono/commit/a050cfc503ae0ec21907596550886a19934d5f3c))
+* **bpx-consult:** support backend-aware consult routes ([e3c67a2](https://github.com/gabelul/bpx-mono/commit/e3c67a2243651e450daf336ca81fa501266ace90))
+
+
+### Bug Fixes
+
+* **bpx-consult:** correct picker and save feedback ([9168e5e](https://github.com/gabelul/bpx-mono/commit/9168e5ed79e4fcad321d65da14115070045681f4))
+
+
+### Maintenance
+
+* **bpx-consult:** prepare 1.0.0 release ([c0fe32c](https://github.com/gabelul/bpx-mono/commit/c0fe32c3756cf03b1c06493b1de72fe8110fe2bf))
+
 ## [0.11.0](https://github.com/gabelul/bpx-mono/compare/v0.10.2...v0.11.0) (2026-09-24)
 
 
