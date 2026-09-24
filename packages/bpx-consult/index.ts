@@ -9,6 +9,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { isDisabledForModel, loadConfig } from "./src/config.js";
 import { runConsultConfigurator } from "./src/consult-ui.js";
@@ -17,7 +18,10 @@ import { gutCheckConfig } from "./src/gut-check.js";
 import { executeCouncil } from "./src/council.js";
 import { executeDebate } from "./src/debate.js";
 import { registerTriggers } from "./src/triggers.js";
-import { registerConsultRenderer } from "./src/deliver.js";
+import { CONSULT_LOCAL_RESULT_TYPE, registerConsultRenderer, withoutLegacyShowMessages } from "./src/deliver.js";
+import { renderConsultCall, renderConsultResult } from "./src/result-ui.js";
+import { listConsultations, newConsultationId, parseLabels, registerConsultationNavigation, recordLabels } from "./src/outcomes.js";
+import { runShareCommand, SHARE_RESULT_TYPE } from "./src/share.js";
 import { createTurnBudget, incrementTurnBudget, isCapReached, resetTurnBudget } from "./src/turn-budget.js";
 import {
 	CONSULT_DESCRIPTION,
@@ -51,7 +55,14 @@ export default function bpxConsult(pi: ExtensionAPI): void {
 		return { action: "continue" };
 	});
 
+	registerConsultationNavigation(pi);
 	registerConsultRenderer(pi);
+	// Older show messages were custom messages, which Pi turns into user context.
+	// Keep them in session history but exclude them from future executor requests.
+	pi.on("context", (event) => {
+		const messages = withoutLegacyShowMessages(event.messages);
+		return messages.length === event.messages.length ? undefined : { messages };
+	});
 	registerConsultTool(pi, budget);
 	registerConsultCommand(pi);
 	registerTriggers(pi);
@@ -65,6 +76,10 @@ function registerConsultTool(pi: ExtensionAPI, budget: ReturnType<typeof createT
 		promptSnippet: DEFAULT_PROMPT_SNIPPET,
 		promptGuidelines: DEFAULT_PROMPT_GUIDELINES,
 		parameters: ConsultParams,
+		renderCall(args, theme) { return renderConsultCall(args, theme); },
+		renderResult(result, options, theme, context) {
+			return renderConsultResult(result, options, theme, context.args.mode);
+		},
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const config = loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
@@ -105,35 +120,77 @@ function registerConsultTool(pi: ExtensionAPI, budget: ReturnType<typeof createT
 			incrementTurnBudget(budget);
 
 			const mode = params.mode ?? config.defaultMode ?? "solo";
-
-			if (mode === "council") {
-				return executeCouncil({ ctx, config, signal, onUpdate, question: params.question });
-			}
-			if (mode === "debate") {
-				return executeDebate({ ctx, config, signal, onUpdate, question: params.question });
-			}
-			if (mode === "gut-check") {
-				return executeSolo({ ctx, config: gutCheckConfig(config), signal, onUpdate, question: params.question });
-			}
-
-			return executeSolo({ ctx, config, signal, onUpdate, question: params.question });
+			const consultationId = newConsultationId();
+			const result = mode === "council"
+				? await executeCouncil({ ctx, config, signal, onUpdate, question: params.question })
+				: mode === "debate"
+					? await executeDebate({ ctx, config, signal, onUpdate, question: params.question })
+					: await executeSolo({ ctx, config: mode === "gut-check" ? gutCheckConfig(config) : config, signal, onUpdate, question: params.question });
+			// Pi's TUI renderer receives content/details, not top-level usage. Mirror
+			// known aggregate usage for display without adding another accounting entry.
+			const reportedUsage = (result as typeof result & { usage?: Usage }).usage;
+			return { ...result, details: { ...result.details, consultationId, requestedMode: mode,
+				...(reportedUsage ? { reportedUsage } : {}) } };
 		},
 	});
 }
 
 function registerConsultCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("consult", {
-		description: "Configure bpx-consult interactively (model, mode, effort, personas, triggers), or /consult status.",
+		description: "Configure advisor, label outcomes, or share explicitly selected files.",
 		async handler(args, ctx) {
-			// `/consult status` keeps the old read-out for a quick glance / non-interactive.
-			// Everything else (no arg, or any other arg) opens the interactive menu.
-			if (args.trim() === "status") {
+			const command = args.trim();
+			if (command === "status") {
 				showStatusReadout(ctx);
+				return;
+			}
+			if (command === "recent") {
+				const records = listConsultations(ctx.sessionManager.getBranch());
+				ctx.ui.notify(records.length ? records.slice(-10).reverse().map((r) =>
+					`${r.id}  ${r.mode} (${r.source})  used: ${formatLabel(r.used)}  helped: ${formatLabel(r.helped)}`,
+				).join("\n") : "No consultations on this session branch.", "info");
+				return;
+			}
+			if (command === "result" || command.startsWith("result ")) {
+				const id = command.slice("result".length).trim();
+				const entry = ctx.sessionManager.getBranch().find((item) => item.type === "custom" &&
+					(item.customType === SHARE_RESULT_TYPE || item.customType === CONSULT_LOCAL_RESULT_TYPE) &&
+					(item.data as { id?: unknown } | undefined)?.id === id);
+				if (!id || !entry || entry.type !== "custom") {
+					ctx.ui.notify("Consult result not found on this session branch. Run /consult recent.", "error");
+					return;
+				}
+				const data = entry.data as { text: string; errorMessage?: string };
+				const text = data.errorMessage && !data.text.includes(data.errorMessage)
+					? `${data.errorMessage}\n\n${data.text}` : data.text;
+				ctx.ui.notify(text, data.errorMessage ? "error" : "info");
+				return;
+			}
+			if (command === "share" || command.startsWith("share ")) {
+				await runShareCommand(pi, ctx, command.slice("share".length).trim());
+				return;
+			}
+			if (command === "label" || command.startsWith("label ")) {
+				const parsed = parseLabels(command.slice("label".length));
+				if (!parsed) {
+					ctx.ui.notify("Usage: /consult label <id> used yes|no|unknown [helped yes|no|unknown] (either field first)", "error");
+					return;
+				}
+				if (!listConsultations(ctx.sessionManager.getBranch()).some((r) => r.id === parsed.id)) {
+					ctx.ui.notify("Consultation ID not found on this session branch. Run /consult recent.", "error");
+					return;
+				}
+				recordLabels(pi, parsed.id, parsed.labels);
+				ctx.ui.notify(`Saved outcome for ${parsed.id}.`, "info");
 				return;
 			}
 			await runConsultConfigurator(ctx, { cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
 		},
 	});
+}
+
+function formatLabel(value: boolean | null | undefined): string {
+	return value === undefined || value === null ? "unknown" : value ? "yes" : "no";
 }
 
 function showStatusReadout(ctx: ExtensionContext): void {
@@ -149,7 +206,7 @@ function showStatusReadout(ctx: ExtensionContext): void {
 		`  maxConsults: ${config.maxConsultsPerTurn ?? 0} per turn (0 = unlimited)`,
 		`  feedback   : ${config.feedbackMode ?? "steer"}`,
 		``,
-		`Run /consult (no args) to edit settings interactively.`,
+		`Run /consult (no args) to edit settings; /consult recent to view IDs and labels.`,
 	];
 	ctx.ui.notify(lines.join("\n"), "info");
 }

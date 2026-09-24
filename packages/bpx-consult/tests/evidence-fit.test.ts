@@ -228,7 +228,7 @@ describe("§I — final assembled output always fits (pathological)", () => {
 		const messages: Message[] = [
 			userText("implement the feature"),
 			editToolCallAssistant("e1", "src/huge.ts"),
-			editResult("e1", "wrote src/huge.ts", bigPatch),
+			editResult("e1", bigPatch, bigPatch),
 			...Array.from({ length: 20 }, (_, i) => userText(`chatter ${i} ` + "c".repeat(1200))),
 		];
 		const result = buildConsultContext({
@@ -242,6 +242,7 @@ describe("§I — final assembled output always fits (pathological)", () => {
 		const diffRow = result.ledger.find((e) => e.index === 2 && e.tag === "diff");
 		expect(diffRow).toBeDefined();
 		expect(diffRow!.disposition).not.toBe("dropped");
+		expect(JSON.stringify(result.messages)).toContain("src/huge.ts");
 	});
 
 	it("(d) fail-closed: directive too big for a tiny window → error signal, never an oversized payload", () => {

@@ -1,4 +1,4 @@
-import type { Message, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { Message, ThinkingLevel, Usage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveSeatBackend, type BpxConsultConfig } from "./config.js";
 import { callCliAdvisor, cliContextWindow, type CliBackendConfig } from "./cli-backend.js";
@@ -46,10 +46,11 @@ export async function callSeatRoute(input: {
 	signal?: AbortSignal;
 	sessionId?: string;
 	maxTokens?: number;
+	onUsage?: (usage: Usage) => void;
 }): Promise<ConsultCallResult> {
-	const { ctx, route, systemPrompt, messages, thinkingLevel, signal, sessionId, maxTokens } = input;
+	const { ctx, route, systemPrompt, messages, thinkingLevel, signal, sessionId, maxTokens, onUsage } = input;
 	if (route.kind === "inline") {
-		return callAdvisor({ ctx, advisor: route.advisor, systemPrompt, messages, thinkingLevel, signal, sessionId, maxTokens });
+		return callAdvisor({ ctx, advisor: route.advisor, systemPrompt, messages, thinkingLevel, signal, sessionId, maxTokens, onUsage });
 	}
 	const result = await callCliAdvisor({ systemPrompt, messages, backend: route.backend, signal, cwd: ctx.cwd,
 		responseReserveTokens: maxTokens });

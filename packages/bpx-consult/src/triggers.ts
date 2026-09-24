@@ -31,16 +31,17 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-coding-agent";
 import type { BpxConsultConfig, ConsultMode } from "./config.js";
 import { loadConfig, resolveFeedbackMode } from "./config.js";
 import { executeSolo } from "./solo.js";
 import { gutCheckConfig } from "./gut-check.js";
 import { executeCouncil } from "./council.js";
 import { executeDebate } from "./debate.js";
-import { deliver } from "./deliver.js";
+import { deliver, showConsultation } from "./deliver.js";
 import { parseConsultPhrase } from "./phrase-trigger.js";
 import { CONSULT_TOOL_NAME } from "./messages.js";
+import { consultationOrigin, isCurrentOrigin, newConsultationId, recordConsultation } from "./outcomes.js";
 
 interface TriggerState {
 	stuckErrors: number;
@@ -52,6 +53,25 @@ interface TriggerState {
 
 function freshState(): TriggerState {
 	return { stuckErrors: 0, lastFingerprint: "", loopCount: 0, autoReviewedThisRound: false, autoRunning: false };
+}
+
+/** Show transient work phases without adding messages to the model transcript. */
+function progressFor(ctx: ExtensionContext, origin: ReturnType<typeof consultationOrigin>, id: string): AgentToolUpdateCallback<unknown> | undefined {
+	try { if (ctx.mode !== "tui") return undefined; }
+	catch { return undefined; }
+	return (update) => {
+		try {
+			if (!isCurrentOrigin(ctx, origin)) return;
+			const phase = update.content.find((part): part is { type: "text"; text: string } => part.type === "text")?.text;
+			if (phase) ctx.ui.setStatus(`bpx-consult-progress-${id}`, phase);
+		} catch { /* Pi invalidates old context getters after session replacement. */ }
+	};
+}
+
+/** Clear only this consultation's status; older completions must not clear newer work. */
+function clearProgress(ctx: ExtensionContext, id: string): void {
+	try { if (ctx.mode === "tui") ctx.ui.setStatus(`bpx-consult-progress-${id}`, undefined); }
+	catch { /* Old context was invalidated by session replacement. */ }
 }
 
 export function registerTriggers(pi: ExtensionAPI): void {
@@ -99,28 +119,50 @@ export function registerTriggers(pi: ExtensionAPI): void {
 		// Only genuine user typing fires phrases. Extension-sourced input (our own
 		// injections) must never re-trigger.
 		if (event.source !== "interactive" && event.source !== "rpc") return { action: "continue" };
-		if (state.autoRunning) return { action: "continue" };
 
 		const parsed = parseConsultPhrase(event.text);
 		if (!parsed) return { action: "continue" };
 
-		const config = loadConfig({ cwd: ctx.cwd, projectTrusted: ctx.isProjectTrusted() });
-		if (!config.enabled) return { action: "continue" };
-		if (!ctx.isProjectTrusted()) return { action: "continue" }; // trust gate
-
+		const trusted = ctx.isProjectTrusted();
+		const config = loadConfig({ cwd: ctx.cwd, projectTrusted: trusted });
 		// Per-mode override wins over the top-level default (e.g. "show council,
 		// steer gut-checks"). resolveFeedbackMode handles the precedence.
 		const feedbackMode = resolveFeedbackMode(config, parsed.mode);
+		if (!config.enabled || !trusted) {
+			if (feedbackMode !== "show") return { action: "continue" };
+			const reason = !trusted ? "Project is not trusted" : "Consult is disabled";
+			if (ctx.hasUI) ctx.ui.notify(`${reason}; show-only request wasn't sent.`, "warning");
+			else pi.appendEntry("bpx-consult-show-unavailable", { mode: parsed.mode, reason });
+			return { action: "handled" };
+		}
+		if (state.autoRunning) {
+			if (feedbackMode !== "show") return { action: "continue" };
+			if (ctx.hasUI) ctx.ui.notify("A consultation is already running; show-only request wasn't sent.", "warning");
+			else pi.appendEntry("bpx-consult-show-unavailable", { mode: parsed.mode, reason: "Consultation already running" });
+			return { action: "handled" };
+		}
+		// No UI means no safe place to display private advice. Consume the input
+		// rather than let the executor act on a "show me, don't act" request.
+		if (feedbackMode === "show" && !ctx.hasUI) {
+			pi.appendEntry("bpx-consult-show-unavailable", { mode: parsed.mode, reason: "No interactive or RPC UI" });
+			return { action: "handled" };
+		}
+		const consultationId = newConsultationId();
+		const origin = consultationOrigin(ctx);
 
 		if (feedbackMode === "show") {
 			state.autoRunning = true;
 			if (ctx.hasUI) ctx.ui.notify(`Consulting (${parsed.mode})… showing the result, not sending it to the agent.`, "info");
 			try {
-				const text = extractText(await runMode(parsed.mode, { ctx, config, signal: ctx.signal, onUpdate: undefined, question: parsed.question }));
-				if (text) deliver(pi, text, "show");
+				const text = extractText(await runMode(parsed.mode, { ctx, config, signal: ctx.signal, onUpdate: progressFor(ctx, origin, consultationId), question: parsed.question }));
+				if (text && isCurrentOrigin(ctx, origin)) {
+					recordConsultation(pi, consultationId, parsed.mode, "phrase");
+					showConsultation(pi, ctx, consultationId, parsed.mode, text);
+				}
 			} catch {
 				// A failed phrase consult must never break the user's input.
 			} finally {
+				clearProgress(ctx, consultationId);
 				state.autoRunning = false;
 			}
 			return { action: "handled" };
@@ -133,19 +175,21 @@ export function registerTriggers(pi: ExtensionAPI): void {
 		if (ctx.hasUI) ctx.ui.notify(`Consulting (${parsed.mode}) — advice will arrive shortly…`, "info");
 		void (async () => {
 			try {
-				const text = extractText(await runMode(parsed.mode, { ctx, config, signal: undefined, onUpdate: undefined, question: parsed.question }));
-				if (text) {
+				const text = extractText(await runMode(parsed.mode, { ctx, config, signal: undefined, onUpdate: progressFor(ctx, origin, consultationId), question: parsed.question }));
+				if (text && isCurrentOrigin(ctx, origin)) {
+					recordConsultation(pi, consultationId, parsed.mode, "phrase");
 					// Frame it so the agent knows the consult already ran and doesn't
 					// re-invoke it off the user's "ask the council" instruction (the
 					// user's text still reaches the model on the steer/pipe path).
 					const framed =
-						`A ${parsed.mode} consult ran on your request:\n\n${text}\n\n` +
+						`A ${parsed.mode} consult ran on your request (ID: ${consultationId}):\n\n${text}\n\n` +
 						`Use this — you don't need to call consult again unless it's insufficient.`;
 					deliver(pi, framed, feedbackMode);
 				}
 			} catch {
 				// never break the turn
 			} finally {
+				clearProgress(ctx, consultationId);
 				state.autoRunning = false;
 			}
 		})();
@@ -250,20 +294,24 @@ async function runTriggeredConsult(
 	deliverAs: "steer" | "followUp",
 ): Promise<void> {
 	state.autoRunning = true;
+	const consultationId = newConsultationId();
+	const origin = consultationOrigin(ctx);
 	try {
 		// Auto-triggers ALWAYS run solo, regardless of defaultMode (§T). Rationale:
 		// an auto-fire is not a deliberate consultation — it's a safety net firing
 		// mid-turn. A council would burn 3+ model calls + synthesis per trigger,
 		// which is a surprise-quota footgun on a loop or repeated errors. Council
 		// is reserved for explicit invocation (mode:council tool arg, /consult).
-		const text = extractText(await executeSolo({ ctx, config, signal: ctx.signal, onUpdate: undefined }));
+		const text = extractText(await executeSolo({ ctx, config, signal: ctx.signal, onUpdate: progressFor(ctx, origin, consultationId) }));
 
-		if (text) {
-			await pi.sendUserMessage(buildMessage(text), { deliverAs });
+		if (text && isCurrentOrigin(ctx, origin)) {
+			recordConsultation(pi, consultationId, "solo", "auto");
+			await pi.sendUserMessage(`Consultation ID: ${consultationId}\n\n${buildMessage(text)}`, { deliverAs });
 		}
 	} catch {
 		// never let an auto-trigger break the turn
 	} finally {
+		clearProgress(ctx, consultationId);
 		state.autoRunning = false;
 	}
 }
@@ -273,7 +321,7 @@ interface RunModeInput {
 	ctx: ExtensionContext;
 	config: BpxConsultConfig;
 	signal: AbortSignal | undefined;
-	onUpdate: undefined;
+	onUpdate: AgentToolUpdateCallback<unknown> | undefined;
 	question?: string;
 }
 

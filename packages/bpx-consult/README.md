@@ -65,7 +65,7 @@ So now the engine classifies before it cuts. Every message gets a deterministic 
 4. **Recent tail**, verbatim while there's room.
 5. **Older path** — compressed to one-line signals (`read x.ts`, `edit y.ts (+30/-5)`, `$ npm test (exit 1)`), then dropped.
 
-**Compress the path, preserve the payload.** Pinned items never get silently dropped — if one's too big it degrades (verbatim → signal → clipped-to-anchors with markers), and in the pathological case where even the essentials won't fit, it fails closed with a clean error instead of overflowing. Every drop, every clip is marked. The full design is in [SPEC §E](SPEC.md#§e--context-engine-v2-evidence-aware-fit--progressive-council-roadmap).
+**Compress the path, preserve the payload.** Tool calls and their matching results are selected as one exchange, including multi-tool turns. If a whole exchange won't fit, it becomes a labeled text signal instead of a broken half-call. Pinned items never get silently dropped — if one's too big it degrades (verbatim → signal → clipped-to-anchors with markers), and in the pathological case where even the essentials won't fit, it fails closed with a clean error instead of overflowing. Every drop, every clip is marked. The full design is in [SPEC §E](SPEC.md#§e--context-engine-v2-evidence-aware-fit--progressive-council-roadmap).
 
 ### The ledger
 
@@ -82,9 +82,13 @@ Because it now decides *what* to keep, it can tell you what it did. Every consul
 | **debate** | Advocate proposes, critic attacks, advocate rebuts. Sequential rounds (1–4), then a synthesizer issues a verdict. | Controversial calls where you want the strongest case on both sides before you commit. |
 | **gut-check** | One cheap fast model, terse output. | The "does this smell off?" sanity check before you do something you're 90% sure about. |
 
-Call `consult()` with no args and solo runs. Pass `mode: "council"` (or `debate`, `gut-check`) to pick another.
+Call `consult()` with no args and solo runs. Pass `mode: "council"` (or `debate`, `gut-check`) to pick another. Tool results use one compact `consult / mode` heading rather than four unrelated layouts: actual route and execution state stay visible, advice stays readable in full, and Ctrl+O expands seat details, consultation ID and reported usage. Unknown CLI spend stays unknown. Council reports each seat as it finishes, then synthesis; Debate shows rounds and closing verdict. Those are progress updates, not extra advisor calls.
 
 Type **`/consult`** to configure routes interactively: Solo, gut-check, Council members, and the synthesizer each have a backend-first editor. Debate uses its selected personas and the same synthesizer routes. Inline seats show Pi's available models; CLI seats keep their own model choices. Candidate models can be probed on their prospective route before saving. (`/consult status` prints a quick read-out.)
+
+**Outcome labels are yours to set, not the model's.** `/consult recent` lists consultation IDs on the active session branch (the last ten are shown). Mark an outcome with `/consult label <id> used yes|no|unknown helped yes|no|unknown`; either field can be set alone and `unknown` clears that field. Nothing is labeled automatically. Outcome metadata holds only ID, mode/source and your chosen labels, not question or advice text. Forking to another branch hides labels that aren't on that branch. Tool results carry their IDs in details; phrase, automatic, and file-sharing consultations show their IDs in the delivered advice.
+
+**Share selected files on purpose:** `/consult share [solo|gut-check|council|debate]` asks for an optional question and exact file paths, one per line. `.diff` and `.patch` files work too; it never runs Git or discovers files for you. In a trusted project with interactive/RPC UI, it reads only those regular UTF-8 files inside the project (up to five, 32 KiB each, 96 KiB total), shows path/size and a short preview, names the configured recipients, then asks before sending full buffered contents. Sharing currently requires inline routes for *every* seat: CLI tools can read other files, so they cannot uphold selected-file consent. No approval, no advisor call. Files must fit the advisor window *verbatim*, or the call fails instead of quietly clipping what you approved. Responses from this command are shown in a UI notification and saved as local, non-model-context session entries; `/consult result <id>` shows one again on the active branch. They aren't steered into the executor. Advisor replies may quote selected files and remain in that local session. There is no secret scanner: inspect selected files yourself. Existing transcript text may already go to the advisor during a normal consult; this consent controls new file reads, not earlier session context.
 
 The **Council members** submenu (one entry on the main `/consult` menu) manages who's on the council. Each seated member opens a detail view:
 
@@ -175,7 +179,7 @@ Advice comes back differently depending on who asked for it. `feedbackMode` (def
 - **Phrase triggers and manual standalone runs** → honor `feedbackMode`:
   - **steer** — injects the advice as a steering message mid-run; the executor sees it and continues without you leaving the flow.
   - **pipe** — injects it as a user message (queued as a follow-up), so the executor treats it as your input.
-  - **show** — UI-only. You read it in a boxed "not sent to the model" message; the executor never sees it. In show mode a phrase trigger also **suppresses the agent run** — "show me, don't act" actually stops the turn (via pi's `{ action: "handled" }` input result).
+  - **show** — local UI notification, saved outside model context and retrievable with `/consult result <id>`. The executor doesn't receive it. That local entry contains the full reply (which may quote your session), unlike the small outcome-label metadata. A phrase trigger also **suppresses the agent run**. Without interactive/RPC UI, it consumes the request without making an advisor or executor call; the session records why no display was possible. Older show messages are filtered from future executor/advisor requests, but previously generated summaries may still quote them.
 - **Auto-triggers (whenStuck / onDone)** → fixed delivery, independent of `feedbackMode`: whenStuck **steers** (so it doesn't interrupt), onDone queues a **followUp**.
 
 **Per-mode override.** `feedbackMode` can be set per mode as well as globally, and the per-mode value wins. So you can keep the top-level default at `steer` but set `modes.council.feedbackMode` to `show` — now "ask the council" gives you a read you act on yourself, while "second opinion" (solo) still steers. Any mode without its own `feedbackMode` inherits the top-level one, which falls back to `steer`.
@@ -194,6 +198,8 @@ Advice comes back differently depending on who asked for it. `feedbackMode` (def
 ## Backends
 
 Solo, gut-check, Council members, Debate roles, and the shared synthesizer can each use an inline model or CLI route. Set `backend` and `cliModels` on that seat in `/consult` or config; keep `model` (or persona `defaultModel`) for its inline choice. The legacy `backends.<model>` map and persona `codexModel` still load. Presets run `codex exec`, `claude -p` (tools disabled), or `opencode run --format json` (dedicated agent with tool-deny settings; not a sandbox). Custom CLIs need a declared `contextWindow` and own their argv; no model flag is appended to custom args. OpenCode model discovery reads `limit.context`/`limit.input` from `opencode models --verbose`; a manual ID or CLI default needs a declared window rather than an invented fallback. Every CLI gets its fitted transcript on stdin. Without a selected CLI model, the CLI's configured default runs.
+
+Inline advisor calls made through the model's `consult()` tool report their provider usage to Pi's `/cost` totals on Pi 0.87.1. This includes retries, failed replies, every Council member, and Debate rounds. CLI routes don't report comparable usage, so mixed consultations count only the known inline calls. Phrase, automatic and `/consult share` consultations run outside a tool result; Pi's extension API doesn't currently provide a supported way to add their usage to `/cost`. They still spend tokens. If a timed-out provider reports usage only after the consult has returned, that late usage cannot be added to its finished tool result either. Older Pi versions may ignore the tool-result usage field.
 
 ---
 
@@ -259,7 +265,7 @@ Where this is heading. The package is pre-1.0, so these are milestone groupings,
 
 **After 1.0**
 
-- **Research-backed council.** Council today argues from stances and the session transcript alone. The next layer grounds those arguments: advisors that web-search for evidence behind their position, focus-area steering (weigh security, or performance, or cost specifically), and context beyond the transcript (files, diagrams, images). Built natively, not as a call-out to another MCP — the pattern's proven, owning it beats delegating it.
+- **Research-backed council.** Council today argues from stances and the session transcript, or from files you explicitly share through `/consult share`. The next layer would let advisors search for evidence, weigh specific concerns (security, performance, cost), and work with diagrams or images. That automatic research is not part of file sharing today.
 - **Memory compression and branched-session handoff.** For very long sessions and dedicated per-persona advisor forks.
 
 The full design (including the decisions behind each of these) is in [SPEC.md on GitHub](https://github.com/gabelul/bpx-mono/blob/main/packages/bpx-consult/SPEC.md).

@@ -7,7 +7,7 @@
  * return the text. That lives here so the modes stay small.
  */
 
-import type { Api, Message, Model, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { Api, Message, Model, ThinkingLevel, Usage } from "@earendil-works/pi-ai";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -94,6 +94,8 @@ export interface ConsultCallInput {
 	sessionId?: string;
 	/** Cap on the advisor's response tokens. Enforces responseReserveTokens on the output side. Optional. */
 	maxTokens?: number;
+	/** Called once per completed provider response, before status or text is interpreted. */
+	onUsage?: (usage: Usage) => void;
 }
 
 export interface ConsultCallResult {
@@ -129,6 +131,7 @@ export async function callAdvisor(input: ConsultCallInput): Promise<ConsultCallR
 		{ systemPrompt, messages, tools: [] },
 		{ apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: effectiveLevel, sessionId: input.sessionId, maxTokens: input.maxTokens },
 	);
+	if (response.usage) input.onUsage?.(response.usage);
 	const effortAdjusted: ConsultCallResult["effortAdjusted"] =
 		thinkingLevel && effectiveLevel !== thinkingLevel ? { requested: thinkingLevel, effective: effectiveLevel ?? "off" } : undefined;
 

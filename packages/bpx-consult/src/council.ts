@@ -11,7 +11,7 @@
  */
 
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Message, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { Message, ThinkingLevel, Usage } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { callAdvisor, resolveAdvisor, type ResolvedAdvisor } from "./advisor.js";
 import { callCliAdvisor, type CliBackendConfig } from "./cli-backend.js";
@@ -26,6 +26,9 @@ import {
 	validateStance,
 } from "./consensus.js";
 import { personaSystemPrompt, resolvePersona, type Persona } from "./personas.js";
+import { ConsultUsage } from "./usage.js";
+import { withoutLegacyShowMessages } from "./deliver.js";
+import type { SelectedAttachment } from "./attachments.js";
 
 export interface CouncilDetails {
 	mode: "council";
@@ -37,6 +40,7 @@ export interface CouncilDetails {
 	ledger?: LedgerSummary;
 	synthesizer: string;
 	confidence: number;
+	phase?: string;
 	confidenceBreakdown?: { successRatio: number; agreementRatio: number; avgAlignment: number };
 	disagreement?: string;
 	usage?: { input: number; output: number; total: number };
@@ -60,6 +64,7 @@ export interface ExecuteCouncilInput {
 	signal: AbortSignal | undefined;
 	onUpdate: AgentToolUpdateCallback<CouncilDetails> | undefined;
 	question?: string;
+	attachments?: readonly SelectedAttachment[];
 }
 
 /**
@@ -74,7 +79,8 @@ type ResolvedMember =
 	| { persona: Persona; kind: "cli"; backend: CliBackendConfig; contextWindow: number; modelLabel: string };
 
 export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentToolResult<CouncilDetails>> {
-	const { ctx, config, signal, onUpdate, question } = input;
+	const { ctx, config, signal, onUpdate, question, attachments } = input;
+	const usageTracker = new ConsultUsage();
 
 	const councilConfig = config.modes?.council;
 	const roster = councilConfig?.members ?? [];
@@ -84,7 +90,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	if (roster.length === 0) {
 		return err(
 			"No council members configured. Set modes.council.members in ~/.pi/agent/bpx-consult.json.",
-			{ mode: "council", members: [], synthesizer: "(none)", confidence: 0 },
+			{ mode: "council", members: [], synthesizer: "(none)", confidence: 0, errorMessage: "no council members configured" },
 		);
 	}
 
@@ -95,7 +101,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 		if (!p) {
 			return err(
 				`Unknown persona "${name}". Check modes.council.members or personas in config.`,
-				{ mode: "council", members: [], synthesizer: "(none)", confidence: 0 },
+				{ mode: "council", members: [], synthesizer: "(none)", confidence: 0, errorMessage: `unknown persona: ${name}` },
 			);
 		}
 		personas.push(p);
@@ -104,7 +110,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	// Resolve the synthesizer model.
 	const synth = resolveSeatRoute(config, { ...councilConfig?.synthesizer, model: synthesizerKey }, (key) => resolveAdvisor(ctx, key));
 	if (synth.kind === "error") {
-		return err(`No synthesizer route: ${synth.message}`, { mode: "council", members: [], synthesizer: "(none)", confidence: 0 });
+		return err(`No synthesizer route: ${synth.message}`, { mode: "council", members: [], synthesizer: "(none)", confidence: 0, errorMessage: synth.message });
 	}
 
 	// Resolve member models UPFRONT so we can fit the shared context to the
@@ -118,7 +124,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	if (memberAdvisors.length === 0) {
 		return err(
 			`No council members could resolve their models:\n${preFailed.map((r) => "- " + r.errorMessage).join("\n")}`,
-			{ mode: "council", members: preFailed.map((r) => ({ persona: r.persona, model: r.model, status: r.status })), synthesizer: synth.label, confidence: 0 },
+			{ mode: "council", members: preFailed.map((r) => ({ persona: r.persona, model: r.model, status: r.status })), synthesizer: synth.label, confidence: 0, errorMessage: "no council members resolved" },
 		);
 	}
 
@@ -130,7 +136,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 		ctx.sessionManager.getEntries(),
 		ctx.sessionManager.getLeafId(),
 	);
-	const branchMessages: Message[] = convertToLlm(sessionMessages);
+	const branchMessages: Message[] = convertToLlm(withoutLegacyShowMessages(sessionMessages));
 	const directive = question?.trim() ? `Specific question from the executor: ${question.trim()}` : undefined;
 
 	const minWindow = Math.min(
@@ -143,6 +149,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 		advisorContextWindow: minWindow,
 		budget: contextBudget,
 		directive,
+		attachments,
 	});
 	const ledgerSummary = summarizeLedger(fit.ledger);
 
@@ -163,15 +170,16 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 		});
 	}
 
-	onUpdate?.({
-		content: [{ type: "text", text: `Consulting council: ${personas.map((p) => p.name).join(", ")}…` }],
-		details: {
-			mode: "council",
-			members: personas.map((p) => ({ persona: p.name, model: p.defaultModel ?? "(inherit)", status: "pending" })),
-			synthesizer: synth.label,
-			confidence: 0,
-		},
+	const memberStatuses = [
+		...preFailed.map((member) => ({ persona: member.persona, model: member.model, status: "error" })),
+		...memberAdvisors.map((member) => ({ persona: member.persona.name, model: member.modelLabel, status: "pending" })),
+	];
+	const emitProgress = (phase: string) => onUpdate?.({
+		content: [{ type: "text", text: phase }],
+		details: { mode: "council", members: memberStatuses.map((member) => ({ ...member })),
+			synthesizer: synth.label, confidence: 0, phase },
 	});
+	emitProgress(`Council: ${preFailed.length}/${memberStatuses.length} seats finished`);
 
 	// Provider-collision warning: if two or more resolved members share a provider,
 	// parallel calls can trip that provider's QPM rate limits and silently kill
@@ -190,9 +198,20 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	// member, making parallel:false a no-op (runSequential awaited promises that
 	// were already running concurrently). Thunks defer execution.
 	const memberTimeoutMs = councilConfig?.timeoutMs ?? 120000;
-	const memberThunks: Array<() => Promise<MemberResult>> = memberAdvisors.map(
-		(member) => () => runMember(ctx, member, fit.messages, contextBudget, signal, sessionId, memberTimeoutMs),
-	);
+	const memberThunks: Array<() => Promise<MemberResult>> = memberAdvisors.map((member, index) => async () => {
+		const slot = memberStatuses[preFailed.length + index]!;
+		try {
+			const result = await runMember(ctx, member, fit.messages, contextBudget, signal, sessionId, memberTimeoutMs, usageTracker.record);
+			slot.status = result.status;
+			return result;
+		} catch (error) {
+			slot.status = "error";
+			throw error;
+		} finally {
+			const finished = memberStatuses.filter((row) => row.status !== "pending").length;
+			emitProgress(`Council: ${finished}/${memberStatuses.length} seats finished`);
+		}
+	});
 
 	// Promise.allSettled semantics: one flaky member never crashes the council.
 	// parallel:false runs thunks sequentially (genuinely one-at-a-time) so the
@@ -222,7 +241,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 	const successful = memberResults.filter((r) => r.status === "ok");
 	if (successful.length === 0) {
 		const errs = memberResults.map((r) => `- ${r.persona} (${r.model}): ${r.errorMessage}`).join("\n");
-		return err(
+		return usageTracker.attach(err(
 			`All council members failed:\n${errs}`,
 			{
 				mode: "council",
@@ -234,10 +253,11 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 				ledger: ledgerSummary,
 				errorMessage: "all members failed",
 			},
-		);
+		));
 	}
 
-	// Synthesize.
+	// Synthesize only after every seat has settled; show partial failures plainly.
+	emitProgress(`Synthesizing ${successful.length}/${memberStatuses.length} replies`);
 	const memberBlock = memberResults
 		.map((r) => {
 			const header = `### ${r.persona} [${r.stance}] — ${r.model} — ${r.status}`;
@@ -260,10 +280,10 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 		budget: contextBudget,
 	});
 	if (synthFit.error) {
-		return err(`Council synthesizer window failed: ${synthFit.error}\n\n${memberBlock}`, {
+		return usageTracker.attach(err(`Council synthesizer window failed: ${synthFit.error}\n\n${memberBlock}`, {
 			mode: "council", members: memberResults.map((r) => ({ persona: r.persona, model: r.model, status: r.status })),
 			synthesizer: synth.label, confidence: confidence.confidence, errorMessage: synthFit.error,
-		});
+		}));
 	}
 
 	try {
@@ -276,6 +296,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 			signal,
 			sessionId,
 			maxTokens: contextBudget.responseReserveTokens,
+			onUsage: usageTracker.record,
 		});
 
 		const details: CouncilDetails = {
@@ -298,14 +319,14 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 		};
 
 		if (synthResult.stopReason === "error" || synthResult.stopReason === "aborted" || !synthResult.text) {
-			return err(`Council synthesizer failed: ${synthResult.errorMessage ?? synthResult.stopReason}\n\n${memberBlock}`,
-				{ ...details, errorMessage: synthResult.errorMessage ?? "empty synthesis" });
+			return usageTracker.attach(err(`Council synthesizer failed: ${synthResult.errorMessage ?? synthResult.stopReason}\n\n${memberBlock}`,
+				{ ...details, errorMessage: synthResult.errorMessage ?? "empty synthesis" }));
 		}
 
-		return ok(synthResult.text, details);
+		return usageTracker.attach(ok(synthResult.text, details));
 	} catch (e) {
 		const message = e instanceof Error ? e.message : String(e);
-		return err(`Council synthesizer call threw: ${message}`, {
+		return usageTracker.attach(err(`Council synthesizer call threw: ${message}`, {
 			mode: "council",
 			members: memberResults.map((r) => ({ persona: r.persona, model: r.model, status: r.status })),
 			synthesizer: synth.label,
@@ -314,7 +335,7 @@ export async function executeCouncil(input: ExecuteCouncilInput): Promise<AgentT
 			omitted: fit.omittedCount,
 			ledger: ledgerSummary,
 			errorMessage: message,
-		});
+		}));
 	}
 }
 
@@ -379,6 +400,7 @@ async function runMember(
 	parentSignal: AbortSignal | undefined,
 	sessionId: string | undefined,
 	memberTimeoutMs: number,
+	onUsage: (usage: Usage) => void,
 ): Promise<MemberResult> {
 	const { persona, modelLabel } = member;
 	const systemPrompt = personaSystemPrompt(persona);
@@ -418,6 +440,7 @@ async function runMember(
 			signal,
 			sessionId,
 			maxTokens: contextBudget.responseReserveTokens,
+			onUsage,
 		});
 	});
 

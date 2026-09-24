@@ -2,6 +2,8 @@
 
 > A council of AI advisors for pi. Consult one model or run a full multi-model consensus before you commit to a direction. Replaces rpiv-advisor and fixes the context-window blowout.
 
+This is the original design record, not a current behavior reference. §C and parts of §B/§X describe the first implementation; §E.0 and §E.1 have since shipped, while §E.2–§E.4 remain proposals. See [README.md](README.md) for current routes, context fitting, triggers, and delivery.
+
 ---
 
 ## §G — Goal
@@ -49,7 +51,7 @@ Sequential and adversarial. Advocate proposes → critic attacks → advocate re
 ### gut-check
 One cheap fast model, terse output, low token budget. "Does this smell off?" Used before you do something you're 90% sure about but want a sanity check. Configured at `modes.gutCheck` (default a flash-tier model, `terse: true`).
 
-## §C — Context engine (the fix)
+## §C — Original v1 context engine (historical)
 
 This is the core. Layered, borrows the best of pi-advisor + pi-extensions/advisor.
 
@@ -80,7 +82,7 @@ Char caps, window size, and the response reserve are configurable under `context
 
 ## §E — Context engine v2: evidence-aware fit & progressive council (roadmap)
 
-v1 (§C) fits by recency-slicing (first 2 + last N) plus uniform per-message char-caps. That **guarantees the window** — the §I invariant — but it optimizes for *"don't error,"* not *"keep the evidence that decides the answer."* Two failure modes, confirmed against Anthropic's advisor-tool docs and two Codex design reviews:
+§E.0/§E.1 have shipped; §E.2–§E.4 below remain proposals. v1 (§C) fits by recency-slicing (first 2 + last N) plus uniform per-message char-caps. That **guarantees the window** — the §I invariant — but it optimizes for *"don't error,"* not *"keep the evidence that decides the answer."* Two failure modes, confirmed against Anthropic's advisor-tool docs and two Codex design reviews:
 
 - **Char-truncating a message destroys the exact artifact the advisor needs** — a clipped stack trace, a half-diff, a cut test log. Dropping a whole low-value block beats mangling a high-value one.
 - **Recency is a lossy proxy for relevance.** In a long debugging session the deciding evidence is often in the *middle* — precisely what first-2/last-N drops.
@@ -177,7 +179,7 @@ Mapped per-persona under `backends`. Council members can be inline or CLI — a 
 
 - **manual** — executor calls `consult()`, or you type `/consult`. Always available.
 - **onDone** — auto-consult after `agent_end`. Off by default (configurable). Project-trust-gated: no silent auto-triggers in untrusted repos.
-- **whenStuck:N** — auto-consult after N consecutive tool errors **or** N identical tool calls. Default N = 3, `0` = off. Lift the loop detector from `pi-extensions/advisor/advisor.ts`: fingerprint = `` `${toolName}:${JSON.stringify(input)}` `` (do **not** truncate it — their CHANGELOG records removing an arbitrary 120-char cap that broke detection), bump `loopCount` on repeat, reset `lastFingerprint`/`loopCount`/`stuckErrors` on user input (`source` = `interactive`/`rpc`).
+- **whenStuck:N** — auto-consult after N consecutive tool errors **or** N identical tool calls. Default N = 0 (off); set a positive N to enable it. Lift the loop detector from `pi-extensions/advisor/advisor.ts`: fingerprint = `` `${toolName}:${JSON.stringify(input)}` `` (do **not** truncate it — their CHANGELOG records removing an arbitrary 120-char cap that broke detection), bump `loopCount` on repeat, reset `lastFingerprint`/`loopCount`/`stuckErrors` on user input (`source` = `interactive`/`rpc`).
 
 Triggers respect a per-session `autoReviewedThisRound` flag (same name as pi-extensions) so they don't fire repeatedly within one round.
 
@@ -187,7 +189,7 @@ Triggers respect a per-session `autoReviewedThisRound` flag (same name as pi-ext
 
 How the advisor's response reaches the executor:
 
-- **show** — UI-only. Rendered via a registered message renderer (`pi.sendMessage({ customType })` + `registerMessageRenderer`), clearly marked "not sent to the model"; the executor never sees it. On the phrase-trigger path, show *also* suppresses the agent run (`{ action: "handled" }` from the input handler) — "show me, don't act" actually stops the turn.
+- **show** — saved locally outside model context and displayed by UI notification; `/consult result <id>` retrieves it on the active branch. The executor does not receive it. On the phrase-trigger path, show suppresses the agent run; without UI it makes no advisor call.
 - **pipe** — injected as a user message: `pi.sendUserMessage(text, { deliverAs: "followUp" })`.
 - **steer** — injected as a steering message mid-run: `pi.sendUserMessage(text, { deliverAs: "steer" })`. The killer feature for unblocking yourself without leaving the flow.
 
@@ -265,7 +267,7 @@ Precedence: env > project (`.pi/`, only if trusted) > global (`~/.pi/agent/`) > 
 ## §O — Out of scope for v1
 
 - **Mixed inline + CLI council** — **shipped.** Council members resolve per-member backends (persona-scoped): a persona whose model has a CLI backend routes through `callCliAdvisor` (async `spawn`), inline otherwise. A CLI member's context window comes from a preset (codex/claude/opencode) or a declared `contextWindow` on the backend — an unknown custom command with no declared window pre-fails rather than guessing. The async `spawn` foundation is what made this a wiring job rather than a rewrite.
-- Native research-backed council — building consensus capabilities in, not delegating out. What council v1 doesn't do yet: research-enhanced stances (advisors web-search for evidence behind their stance), focus-area steering (`focus_areas` — security/performance/cost weighting per advisor), and context beyond the session transcript (files/images). v2 builds these natively.
+- Native research-backed council — building consensus capabilities in, not delegating out. What council v1 doesn't do yet: research-enhanced stances (advisors web-search for evidence behind their stance), focus-area steering (`focus_areas` — security/performance/cost weighting per advisor), and context beyond the session transcript. Explicit, consented text-file sharing now ships through `/consult share`; automatic file discovery and images do not.
 - Memory compression (caveman-style) for very long sessions. v2.
 - Branched session handoff — `pi-mimir`'s `SessionManager.createBranchedSession(leafId)` forks a snapshot `.jsonl` and runs a child `pi` subprocess (`--session`, `--model`, `--system-prompt`, `--tools`). Powerful for dedicated per-persona advisor sessions, but v2.
 - Stage/signal detection (§C steps 3–4) is **v1.0 fast-follow, not blocking** — window-fit ships without it. Forked from `advisor-signals.ts` once the guaranteed-fit core is proven.

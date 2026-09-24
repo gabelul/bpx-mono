@@ -148,6 +148,13 @@ function looksLikeReviewerFinding(text: string): boolean {
 	return REVIEWER_FINDING_PATTERNS.some((p) => p.test(text));
 }
 
+/** Keep the matched finding, not arbitrary leading chatter, when evidence is compressed. */
+export function reviewerFindingExcerpt(text: string): string {
+	const positions = REVIEWER_FINDING_PATTERNS.map((pattern) => text.search(pattern)).filter((index) => index >= 0);
+	const offset = positions.length ? Math.min(...positions) : 0;
+	return text.slice(Math.max(0, offset - 24), offset + 180).replace(/\s+/g, " ").trim();
+}
+
 /**
  * Acceptance-criteria keywords. Also best-effort per §E.0. Matches the phrasings
  * humans use to state what "done" means ("acceptance criteria", "must pass",

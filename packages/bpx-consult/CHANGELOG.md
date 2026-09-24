@@ -141,13 +141,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Bug Fixes
 
 * **timeout:** remove AbortSignal listener leak + drop dead linkSignal ([e4fea8f](https://github.com/gabelul/bpx-mono/commit/e4fea8f40799a163981769654959bc9bc35b8fe5))
-
-## [Unreleased]
-
-### Added
-- v1: solo, council, debate, and gut-check consult modes.
-- Context engine that fits the conversation to the advisor model's actual window (the §P fix).
-- Triggers: onDone and whenStuck (loop + error detection), solo-only by design.
-- CLI backend (codex/claude/opencode) via non-blocking subprocess.
-- Wall-clock timeouts on council, debate, and CLI paths.
-- Project-local config (`.pi/bpx-consult.json`, trusted projects only).

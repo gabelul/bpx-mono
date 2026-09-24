@@ -29,7 +29,7 @@
  */
 
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, Usage } from "@earendil-works/pi-ai";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { resolveAdvisor } from "./advisor.js";
 import { callSeatRoute, resolveSeatRoute, type ResolvedRoute } from "./route.js";
@@ -37,6 +37,9 @@ import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSu
 import type { BpxConsultConfig } from "./config.js";
 import { personaSystemPrompt, resolvePersona } from "./personas.js";
 import { withTimeout } from "./timeout.js";
+import { ConsultUsage } from "./usage.js";
+import { withoutLegacyShowMessages } from "./deliver.js";
+import type { SelectedAttachment } from "./attachments.js";
 
 export interface DebateDetails {
 	mode: "debate";
@@ -45,6 +48,7 @@ export interface DebateDetails {
 	critic: string;
 	synthesizer: string;
 	steps: Array<{ round: number; role: "advocate" | "critic"; status: string }>;
+	phase?: string;
 	/** Estimated tokens of the final synthesizer input (grown transcript). */
 	finalTranscriptTokens?: number;
 	/** §E.0 evidence-ledger roll-up for the seed session context each debater saw. */
@@ -74,10 +78,12 @@ export interface ExecuteDebateInput {
 	signal: AbortSignal | undefined;
 	onUpdate: AgentToolUpdateCallback<DebateDetails> | undefined;
 	question?: string;
+	attachments?: readonly SelectedAttachment[];
 }
 
 export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToolResult<DebateDetails>> {
-	const { ctx, config, signal: parentSignal, onUpdate, question } = input;
+	const { ctx, config, signal: parentSignal, onUpdate, question, attachments } = input;
+	const usageTracker = new ConsultUsage();
 	const debateConfig = config.modes?.debate;
 	const rounds = clampRounds(debateConfig?.rounds);
 
@@ -85,7 +91,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 	const criticPersona = resolvePersona(debateConfig?.critic ?? "critic", config.personas as never);
 	if (!advocatePersona || !criticPersona) {
 		const missing = !advocatePersona ? debateConfig?.advocate : debateConfig?.critic;
-		return err(`Unknown persona "${missing}". Check modes.debate in config.`, emptyDetails(config));
+		return err(`Unknown persona "${missing}". Check modes.debate in config.`, { ...emptyDetails(config), errorMessage: `unknown persona: ${missing}` });
 	}
 
 	const advocate = resolveSeatRoute(config, { ...config.personas?.[advocatePersona.name], model: advocatePersona.defaultModel ?? config.modes?.solo?.model }, (key) => resolveAdvisor(ctx, key));
@@ -98,7 +104,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 			critic.kind === "error" && `critic (${critic.message})`,
 			synth.kind === "error" && `synthesizer (${synth.message})`,
 		].filter(Boolean).join("; ");
-		return err(`Could not resolve debate models: ${unresolved}.`, emptyDetails(config));
+		return err(`Could not resolve debate models: ${unresolved}.`, { ...emptyDetails(config), errorMessage: unresolved });
 	}
 
 	const details: DebateDetails = {
@@ -109,9 +115,13 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		synthesizer: synth.label,
 		steps: [],
 	};
+	let acceptingUpdates = true;
 	const pushStep = (round: number, role: "advocate" | "critic", status: string) => {
+		if (!acceptingUpdates) return;
 		details.steps.push({ round, role, status });
-		onUpdate?.({ content: [{ type: "text", text: `Debate round ${round}/${rounds}, ${role}: ${status}` }], details });
+		const phase = `Round ${round}/${rounds} · ${role} ${status}`;
+		onUpdate?.({ content: [{ type: "text", text: phase }],
+			details: { ...details, steps: details.steps.map((step) => ({ ...step })), phase } });
 	};
 
 	// --- Build the seed context once (the executor's compacted session) ---
@@ -120,7 +130,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		ctx.sessionManager.getEntries(),
 		ctx.sessionManager.getLeafId(),
 	);
-	const branchMessages: Message[] = convertToLlm(sessionMessages);
+	const branchMessages: Message[] = convertToLlm(withoutLegacyShowMessages(sessionMessages));
 	const directive = question?.trim() ? `Specific question from the executor: ${question.trim()}` : undefined;
 	const sessionId = ctx.sessionManager.getSessionId();
 
@@ -134,6 +144,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 			advisorContextWindow: fitWindow,
 			budget: contextBudget,
 			directive: [directive, extra].filter(Boolean).join("\n\n") || undefined,
+			attachments,
 		});
 		if (fit.error) throw new Error(`Debate window failed: ${fit.error}`);
 		// Record the ledger from the seed fit (the transcript is the same each round;
@@ -168,7 +179,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		pushStep(1, "advocate", "running");
 		const r1Advocate = await callStep(ctx, advocate, personaSystemPrompt(advocatePersona), fitWithContext(
 			"OPENING: make the strongest case FOR the position under debate.",
-		), advocatePersona.thinkingLevel, debateSignal, sessionId, contextBudget.responseReserveTokens);
+		), advocatePersona.thinkingLevel, debateSignal, sessionId, contextBudget.responseReserveTokens, usageTracker.record);
 		if (!r1Advocate.ok) { pushStep(1, "advocate", "error"); return bail(`Round 1 advocate failed: ${r1Advocate.error}`); }
 		roundLog.push(`### Round 1 — Advocate (FOR)\n${r1Advocate.text}`);
 		pushStep(1, "advocate", "ok");
@@ -185,7 +196,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 				pushStep(round, "advocate", "running");
 				const rebut = await callStep(ctx, advocate, personaSystemPrompt(advocatePersona), fitWithContext(
 					ADVOCATE_REBUT_FRAME(lastCriticText ?? ""),
-				), advocatePersona.thinkingLevel, debateSignal, sessionId, contextBudget.responseReserveTokens);
+				), advocatePersona.thinkingLevel, debateSignal, sessionId, contextBudget.responseReserveTokens, usageTracker.record);
 				if (!rebut.ok) { pushStep(round, "advocate", "error"); return bail(`Round ${round} advocate rebuttal failed: ${rebut.error}`); }
 				roundLog.push(`### Round ${round} — Advocate Rebuttal (FOR)\n${rebut.text}`);
 				pushStep(round, "advocate", "ok");
@@ -196,7 +207,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 			pushStep(round, "critic", "running");
 			const attack = await callStep(ctx, critic, personaSystemPrompt(criticPersona), fitWithContext(
 				CRITIC_ATTACK_FRAME(lastAdvocateText),
-			), criticPersona.thinkingLevel, debateSignal, sessionId, contextBudget.responseReserveTokens);
+			), criticPersona.thinkingLevel, debateSignal, sessionId, contextBudget.responseReserveTokens, usageTracker.record);
 			if (!attack.ok) { pushStep(round, "critic", "error"); return bail(`Round ${round} critic attack failed: ${attack.error}`); }
 			roundLog.push(`### Round ${round} — Critic (AGAINST)\n${attack.text}`);
 			pushStep(round, "critic", "ok");
@@ -220,6 +231,11 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		});
 		if (synthFit.error) return bail(`Debate synthesizer window failed: ${synthFit.error}`);
 		details.finalTranscriptTokens = synthFit.estimatedTokens;
+		if (acceptingUpdates) {
+			const phase = `Closing verdict · ${synth.label}`;
+			onUpdate?.({ content: [{ type: "text", text: phase }],
+				details: { ...details, steps: details.steps.map((step) => ({ ...step })), phase } });
+		}
 
 		const synthResult = await callSeatRoute({
 			ctx,
@@ -230,6 +246,7 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 			signal: debateSignal,
 			sessionId,
 			maxTokens: contextBudget.responseReserveTokens,
+			onUsage: usageTracker.record,
 		});
 
 		details.usage = synthResult.usage;
@@ -250,19 +267,20 @@ export async function executeDebate(input: ExecuteDebateInput): Promise<AgentToo
 		return bail(`Debate threw: ${message}`);
 	}
 	}); // end withTimeout body
+	acceptingUpdates = false;
 
 	// Unwrap the timeout outcome. Both paths use formatDebatePartial so a wall-
 	// clock timeout or body throw doesn't discard completed rounds either.
 	if (outcome.timedOut) {
-		return err(formatDebatePartial(`Debate timed out after ${debateTimeoutMs}ms (all rounds + synth budget).`, roundLog), { ...details, errorMessage: `timeout after ${debateTimeoutMs}ms` });
+		return usageTracker.attach(err(formatDebatePartial(`Debate timed out after ${debateTimeoutMs}ms (all rounds + synth budget).`, roundLog), { ...details, errorMessage: `timeout after ${debateTimeoutMs}ms` }));
 	}
 	if (!outcome.ok) {
 		// A non-timeout error inside the body — the catch already converted it to
 		// an err() result, but withTimeout re-throws on the error path. Surface it.
 		const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
-		return err(formatDebatePartial(`Debate failed: ${message}`, roundLog), { ...details, errorMessage: message });
+		return usageTracker.attach(err(formatDebatePartial(`Debate failed: ${message}`, roundLog), { ...details, errorMessage: message }));
 	}
-	return outcome.value;
+	return usageTracker.attach(outcome.value);
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +296,7 @@ async function callStep(
 	signal: AbortSignal | undefined,
 	sessionId: string | undefined,
 	responseReserveTokens: number,
+	onUsage: (usage: Usage) => void,
 ): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
 	try {
 		const result = await callSeatRoute({
@@ -289,6 +308,7 @@ async function callStep(
 			signal,
 			sessionId,
 			maxTokens: responseReserveTokens,
+			onUsage,
 		});
 		// Reject a response that arrived after the signal aborted — the timeout
 		// (or a user abort) fired while we were waiting. The response may be

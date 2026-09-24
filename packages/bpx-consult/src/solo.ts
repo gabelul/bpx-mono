@@ -25,6 +25,9 @@ import { buildConsultContext, summarizeLedger, type ContextBudget, type LedgerSu
 import type { BpxConsultConfig } from "./config.js";
 import { resolveSeatRoute } from "./route.js";
 import { callCliAdvisor } from "./cli-backend.js";
+import { ConsultUsage } from "./usage.js";
+import { withoutLegacyShowMessages } from "./deliver.js";
+import type { SelectedAttachment } from "./attachments.js";
 import {
 	ERR_ABORTED_DETAIL,
 	ERR_CALL_ABORTED,
@@ -103,10 +106,11 @@ export interface ExecuteSoloInput {
 	onUpdate: AgentToolUpdateCallback<SoloDetails> | undefined;
 	/** Optional explicit question to inject at the tail of the context. */
 	question?: string;
+	attachments?: readonly SelectedAttachment[];
 }
 
 export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolResult<SoloDetails>> {
-	const { ctx, config, signal, onUpdate, question } = input;
+	const { ctx, config, signal, onUpdate, question, attachments } = input;
 
 	const soloConfig = config.modes?.solo;
 	const thinkingLevel = soloConfig?.thinkingLevel;
@@ -125,7 +129,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 		ctx.sessionManager.getEntries(),
 		ctx.sessionManager.getLeafId(),
 	);
-	const branchMessages: Message[] = convertToLlm(sessionMessages);
+	const branchMessages: Message[] = convertToLlm(withoutLegacyShowMessages(sessionMessages));
 
 	// 2. Re-fit to THIS advisor's window. This is the §P fix.
 	const contextBudget = config.contextBudget as ContextBudget;
@@ -141,6 +145,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 		advisorContextWindow: advisorWindow,
 		budget: contextBudget,
 		directive,
+		attachments,
 	});
 	const ledgerSummary = summarizeLedger(fit.ledger);
 
@@ -160,6 +165,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 		});
 	}
 
+	const usageTracker = new ConsultUsage();
 	try {
 		// Backend dispatch: if the solo model has a CLI backend configured, route
 		// to the async subprocess path (spawn the CLI, pipe the fitted context to
@@ -195,17 +201,17 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 			for (let attempt = 0; ; attempt++) {
 				const attemptFit = attempt === 0
 					? fit
-					: buildConsultContext({ sessionMessages: branchMessages, advisorContextWindow: effectiveWindow, budget: contextBudget, directive });
+					: buildConsultContext({ sessionMessages: branchMessages, advisorContextWindow: effectiveWindow, budget: contextBudget, directive, attachments });
 				if (attemptFit.error) {
-					return err(`Couldn't fit the advisor window: ${attemptFit.error}`, {
+					return usageTracker.attach(err(`Couldn't fit the advisor window: ${attemptFit.error}`, {
 						advisorModel: advisor.label, thinkingLevel, mode: "solo",
 						fittedTokens: attemptFit.estimatedTokens, omitted: attemptFit.omittedCount,
 						ledger: summarizeLedger(attemptFit.ledger), errorMessage: attemptFit.error,
-					});
+					}));
 				}
 				result = await callAdvisor({
 					ctx, advisor, systemPrompt: ADVISOR_SYSTEM_PROMPT, messages: attemptFit.messages,
-					thinkingLevel, signal, sessionId: ctx.sessionManager.getSessionId(), maxTokens,
+					thinkingLevel, signal, sessionId: ctx.sessionManager.getSessionId(), maxTokens, onUsage: usageTracker.record,
 				});
 				const tooLong = isTooLongError(result.errorMessage);
 				if (!tooLong || attempt >= MAX_TOO_LONG_RETRIES) {
@@ -233,19 +239,19 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 		};
 
 		if (stopReason === "aborted") {
-			return err(ERR_CALL_ABORTED, { ...baseDetails, errorMessage: errorMessage ?? ERR_ABORTED_DETAIL });
+			return usageTracker.attach(err(ERR_CALL_ABORTED, { ...baseDetails, errorMessage: errorMessage ?? ERR_ABORTED_DETAIL }));
 		}
 		if (stopReason === "error") {
-			return err(errCallFailed(errorMessage), baseDetails);
+			return usageTracker.attach(err(errCallFailed(errorMessage), baseDetails));
 		}
 		if (!text) {
-			return err(ERR_EMPTY_RESPONSE, { ...baseDetails, errorMessage: ERR_EMPTY_RESPONSE_DETAIL });
+			return usageTracker.attach(err(ERR_EMPTY_RESPONSE, { ...baseDetails, errorMessage: ERR_EMPTY_RESPONSE_DETAIL }));
 		}
 
-		return ok(text, baseDetails);
+		return usageTracker.attach(ok(text, baseDetails));
 	} catch (e) {
 		const message = e instanceof Error ? e.message : String(e);
-		return err(errCallThrew(message), {
+		return usageTracker.attach(err(errCallThrew(message), {
 			advisorModel: route.label,
 			thinkingLevel,
 			mode: "solo",
@@ -253,7 +259,7 @@ export async function executeSolo(input: ExecuteSoloInput): Promise<AgentToolRes
 			omitted: fit.omittedCount,
 			ledger: ledgerSummary,
 			errorMessage: message,
-		});
+		}));
 	}
 }
 

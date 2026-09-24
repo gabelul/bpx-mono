@@ -21,7 +21,7 @@ describe("consult tool entry routing", () => {
 		mocked.solo.mockResolvedValue({ content: [{ type: "text", text: "OK" }], details: { mode: "solo" } });
 		let handler: ((...args: unknown[]) => Promise<unknown>) | undefined;
 		const pi = {
-			on: vi.fn(), registerCommand: vi.fn(),
+			on: vi.fn(), registerCommand: vi.fn(), registerEntryRenderer: vi.fn(),
 			registerTool: vi.fn((tool: { execute: (...args: unknown[]) => Promise<unknown> }) => { handler = tool.execute; }),
 		} as unknown as ExtensionAPI;
 		extension(pi);
