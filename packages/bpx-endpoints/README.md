@@ -75,11 +75,14 @@ Discovery runs in two modes: the endpoint's own model list (`discovery.mode: "en
 OpenAI-compatible endpoints reject unknown `reasoning_effort` values, and pi's thinking levels (`low` through `xhigh`) don't map onto every server's schema. So bpx-endpoints never copies a metadata source's `thinkingLevelMap` verbatim; it always emits a complete map:
 
 - **Unknown endpoint** → a canonical `low`/`medium`/`high` map that no pi level can leak through.
-- **Live probe** (`discovery.reasoningProbe: true`, or `ctrl+r` in the models view) → up to four 1-token completions record which effort values the endpoint actually accepts, and the map picks the nearest accepted value for every pi level. Probe results cache per profile.
+- **Live probe** (`discovery.reasoningProbe: true`, or `ctrl+r` in the models view) → tiny 1-token requests per candidate value (`low`/`medium`/`high`/`xhigh`/`minimal`/`none`, max 3 models per refresh) record which values the endpoint actually accepts, and the map picks the nearest accepted value for every pi level. Evidence caches per model — one model's result is never reused for its siblings.
+- **Error mining** → when a probe or test message 400s with an effort-specific rejection that *declares* its supported set ("Supported types are xhigh (default), medium, and low"), the declared values are mined and unioned into the map. A failed test message that teaches the profile something updates the map immediately.
 - **Manual override** (`reasoningEfforts: ["low", "medium"]`) → wins over probe results.
-- An endpoint that accepts *no* effort value registers its reasoning models as non-reasoning, with a doctor warning.
+- An endpoint that accepts *no* effort value registers its reasoning models as non-reasoning, with a doctor note pointing at the pi-native alternative (`compat.supportsReasoningEffort: false` + a `thinkingFormat`).
 
-A complete `thinkingLevelMap` you author yourself in `models.custom.json` is never clobbered.
+When the endpoint accepts `none`, pi's `off` level maps to it — a real zero-thinking setting, not "think a little".
+
+Precedence, explicit: your authored `thinkingLevelMap` (models.custom.json override) always wins. Complete maps pass through untouched; partial maps keep their authored entries — `null` values included, which pi hides from the level picker — and only missing keys are filled from the best evidence available. Then manual `reasoningEfforts`, then per-model probe evidence, then canonical.
 
 ## Keys, headers, and baseUrl references
 

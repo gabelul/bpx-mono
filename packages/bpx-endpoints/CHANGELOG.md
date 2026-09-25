@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0 — 2026-09-25
+
+### Fixes
+
+- **Reasoning policy now covers `openai-responses` profiles.** v0.2.x skipped them entirely, so models behind a Responses-API endpoint (e.g. vLLM's `/v1/responses`) got no `thinkingLevelMap` at all — pi leaked its raw thinking level as the wire value and the endpoint 400'd. Both OpenAI APIs now share the full policy.
+- **Evidence is per-model, not per-endpoint.** One model's probe result was previously applied to every model on the profile (and the probe ran on the first *available* model, which might not even reason). Evidence is now keyed by model id, only reasoning-flagged models are probed, and a sibling's accepted set is never reused. Legacy single-result caches migrate to their recorded model.
+- **Timeouts are unknown, not accepted.** v0.2.x promoted timed-out probe values to accepted when the server showed any fast signal; queued servers and delayed validation make silence ambiguous. Timeouts are recorded as `timedOut` and excluded from the map. All-timeout-with-zero-signals remains fatal.
+- **Explicit map precedence.** A user-authored `thinkingLevelMap` (models.custom.json override) always wins: complete maps pass through untouched, and partial maps keep their authored entries — including `null` values, which pi renders as unsupported levels — while only *missing* keys are filled. Previously any non-complete map (nulls included) was clobbered wholesale by probe/manual data or the canonical set.
+
+### Features
+
+- **Error-message mining.** When a probe request or test message dies on an effort-specific rejection, the body is mined for a declared supported set ("Supported types are xhigh (default), medium, and low"). Mining is guarded three ways: structured `error.message` fields are preferred over raw bodies, sentences that negate support ("reasoning_effort is not supported") are dropped so echoed request values can't be mistaken for declarations, and extraction windows require affirmative declaration phrases. Mined values are stored as `advertised` — safe to send, not exhaustive — and union with probe acceptances, minus anything the endpoint effort-rejected. A failed test message that yields a set teaches the profile immediately (evidence replaces any older acceptance for that model, since the endpoint just contradicted it) and re-registers the config. This is refresh/test-time learning; the extension is not inside pi's request path, so mid-conversation 400s are not intercepted.
+- **True off via wire value.** The effort vocabulary now includes `none` and `minimal`. When an endpoint accepts `none`, pi's `off` level maps to it — zero reasoning tokens instead of a token-burning `low` (verified against a Qwen3.8-27B vLLM serving: 0 vs 52 thinking tokens on a trivial question).
+- **Wider probe vocabulary** (`low`/`medium`/`high`/`xhigh`/`minimal`/`none`) with a per-refresh budget (max 3 models, oldest evidence first) and 24h evidence freshness keyed to the endpoint's identity (resolved baseUrl + api): repoint a profile at a different backend and the old evidence is re-probed, not reused. Migrated v0.2.x evidence is flagged `degraded` — v0.2 promoted timeouts to acceptances, so migrated sets re-probe on the first refresh instead of riding on guessed values.
+- **Transport-verified true off.** The wire behavior is pinned by integration tests against pi-ai's real adapters (not just config generation): with a map routing `off → "none"`, the completions adapter sends `reasoning_effort: "none"` and the responses adapter sends `reasoning.effort: "none"`.
+- The non-reasoning doctor note now points at pi's native escape hatch (`compat.supportsReasoningEffort: false` + a `thinkingFormat`) instead of implying non-reasoning is the only option.
+
+### Breaking-ish
+
+- Probe timeout semantics changed as above — cached v0.2.x evidence re-derives through the new rules on next refresh.
+
 ## 0.2.0 — 2026-09-05
 
 ### Features

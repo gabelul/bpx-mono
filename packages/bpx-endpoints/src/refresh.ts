@@ -1,7 +1,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { buildParameterCandidates, generatedDefaultModel } from "./candidates.js";
-import { chatCompletionsUrl, effortRelatedRejection, PROBE_EFFORT_VALUES } from "./reasoning.js";
+import { chatCompletionsUrl, effortRelatedRejection, extractSupportedEfforts, migrateLegacyReasoningCache, orderEfforts, PROBE_EFFORT_VALUES, responsesUrl } from "./reasoning.js";
 import type { CachedProfile, EndpointDiscoveryResult, EndpointModel, ModelsDevRecord, EndpointProfile, ReasoningProbeResult, RuntimeCapabilities } from "./types.js";
 
 export type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
@@ -225,23 +225,27 @@ const PROBE_REASONING_DETAIL_CHARS = 300;
 /**
  * Probe a live endpoint for the reasoning_effort values it actually accepts.
  *
- * Sends one minimal chat completion per candidate value (in parallel, 1 token
- * each) to the profile's chat endpoint using the given model id. 2xx means the
- * value is accepted; 400/422 means rejected (classified effort-related from the
- * error body); any other status or a network failure aborts the probe with a
- * fatal error, because those signals say nothing about reasoning_effort.
+ * Sends one minimal request per candidate value (in parallel, 1 token each)
+ * for the given model id — chat completions body for openai-completions,
+ * responses body (reasoning.effort) for openai-responses. 2xx means accepted;
+ * 400/422 bodies are classified effort-related and, when the server declares
+ * its supported set ("Supported types are xhigh, medium, and low"), the
+ * declared values are mined into `advertised`.
  *
- * Timeout handling is deliberate: servers that validate reasoning_effort
- * eagerly reject bad values instantly (a 400 before any generation) and only
- * accept good values by actually generating — which on a big self-hosted model
- * can exceed a probe timeout. So a timeout counts as *accepted* whenever the
- * server produced ANY fast signal (a 2xx or a 400/422), and only aborts the
- * whole probe when every value timed out with zero signals (endpoint hung).
+ * Evidence semantics (v0.3.0):
+ * - accepted: the endpoint returned 2xx — empirically valid.
+ * - advertised: the endpoint declared these values — safe to send, but the
+ *   declaration is not exhaustive (values it failed to mention may work).
+ * - timedOut: unknown. A request that neither succeeded nor produced an error
+ *   body says nothing about the value: queued servers, delayed validation, and
+ *   cold model loads all look like silence. (v0.2.x promoted timeouts to
+ *   accepted when the server showed any fast signal; that inference was
+ *   unsound and is gone.) A probe where every value timed out with zero
+ *   signals is fatal — the endpoint hung.
  *
- * The probe is deliberately tiny (max_tokens 1) — enough for the server's
- * request validation to run, which is where reasoning_effort is rejected. Only
- * openai-completions profiles should call this (other protocols handle thinking
- * differently).
+ * The probe is deliberately tiny (max_tokens 1 / max_output_tokens 16) —
+ * enough for the server's request validation to run, which is where
+ * reasoning_effort is rejected.
  */
 export async function probeReasoningEfforts(input: {
   profile: EndpointProfile;
@@ -253,11 +257,13 @@ export async function probeReasoningEfforts(input: {
 }): Promise<ReasoningProbeResult> {
   const values = [...(input.values ?? PROBE_EFFORT_VALUES)];
   const fetcher = input.fetcher ?? fetch;
-  const url = chatCompletionsUrl(await resolveProfileBaseUrl(input.profile));
+  const isResponses = input.profile.api === "openai-responses";
+  const url = isResponses ? responsesUrl(await resolveProfileBaseUrl(input.profile)) : chatCompletionsUrl(await resolveProfileBaseUrl(input.profile));
   const headers = await probeHeaders(input.profile);
   const timeoutMs = input.timeoutMs ?? PROBE_REASONING_TIMEOUT_MS;
   const accepted: string[] = [];
   const rejected: ReasoningProbeResult["rejected"] = [];
+  const advertised = new Set<string>();
   const timedOut: string[] = [];
   let fatal: string | undefined;
   let sawFastSignal = false;
@@ -269,12 +275,16 @@ export async function probeReasoningEfforts(input: {
         response = await fetcher(url, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...headers },
-          body: JSON.stringify({
-            model: input.modelId,
-            messages: [{ role: "user", content: PROBE_REASONING_PROMPT }],
-            max_tokens: PROBE_REASONING_MAX_TOKENS,
-            reasoning_effort: value,
-          }),
+          body: JSON.stringify(
+            isResponses
+              ? { model: input.modelId, input: PROBE_REASONING_PROMPT, max_output_tokens: 16, reasoning: { effort: value } }
+              : {
+                  model: input.modelId,
+                  messages: [{ role: "user", content: PROBE_REASONING_PROMPT }],
+                  max_tokens: PROBE_REASONING_MAX_TOKENS,
+                  reasoning_effort: value,
+                },
+          ),
           signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (error) {
@@ -292,7 +302,12 @@ export async function probeReasoningEfforts(input: {
       }
       const text = await response.text().catch(() => "");
       if (response.status === 400 || response.status === 422) {
-        rejected.push({ value, status: response.status, detail: text.slice(0, PROBE_REASONING_DETAIL_CHARS), effortRelated: effortRelatedRejection(text) });
+        const effortRelated = effortRelatedRejection(text);
+        if (effortRelated) {
+          const mined = extractSupportedEfforts(text);
+          if (mined) for (const value2 of mined) advertised.add(value2);
+        }
+        rejected.push({ value, status: response.status, detail: text.slice(0, PROBE_REASONING_DETAIL_CHARS), effortRelated });
       } else {
         fatal = `HTTP ${response.status} for ${value}${text ? `: ${text.slice(0, 200)}` : ""}`;
       }
@@ -300,15 +315,19 @@ export async function probeReasoningEfforts(input: {
   );
   const probedAt = (input.now ?? (() => new Date()))().toISOString();
   if (fatal) return { probedAt, modelId: input.modelId, accepted, rejected, error: fatal };
+  const result: ReasoningProbeResult = {
+    probedAt,
+    modelId: input.modelId,
+    accepted,
+    rejected,
+    endpointIdentity: { api: input.profile.api, baseUrl: await resolveProfileBaseUrl(input.profile) },
+    ...(timedOut.length > 0 ? { timedOut } : {}),
+    ...(advertised.size > 0 ? { advertised: orderEfforts([...advertised]), learnedFrom: accepted.length > 0 ? ("probe" as const) : ("error-message" as const) } : {}),
+  };
   if (timedOut.length > 0 && !sawFastSignal && timedOut.length === values.length) {
-    return { probedAt, modelId: input.modelId, accepted, rejected, error: `all probe requests timed out after ${timeoutMs}ms — endpoint slow or unresponsive` };
+    return { ...result, error: `all probe requests timed out after ${timeoutMs}ms — endpoint slow or unresponsive` };
   }
-  if (timedOut.length > 0) {
-    // The server validated something fast (2xx or 400) — rejection is eager, so a
-    // timeout means the value passed validation and is generating. Accept it.
-    accepted.push(...timedOut);
-  }
-  return { probedAt, modelId: input.modelId, accepted, rejected };
+  return result;
 }
 
 function isProbeTimeout(error: unknown): boolean {
@@ -333,36 +352,76 @@ async function probeHeaders(profile: EndpointProfile): Promise<Record<string, st
 }
 
 /**
- * Run the reasoning_effort probe when the profile opts in, has at least one
- * reasoning model, and speaks openai-completions. Attaches the outcome to the
- * cached profile; a fatal probe failure is recorded as `reasoning.error` and
- * pushed into the profile's refresh warnings.
+ * Run the reasoning_effort probe when the profile opts in, has reasoning
+ * models, and speaks an API the probe supports (openai-completions,
+ * openai-responses). Evidence is collected PER MODEL — launchers validate per
+ * model, and one model's accepted set says nothing about its siblings — capped
+ * at REASONING_PROBE_MAX_MODELS per refresh to bound cost on large catalogs.
+ * Fresh per-model evidence (under REASONING_EVIDENCE_TTL_MS) is reused unless
+ * force is set. A fatal probe on one model is recorded on that model alone.
  */
+const REASONING_PROBE_MAX_MODELS = 3;
+const REASONING_EVIDENCE_TTL_MS = 24 * 60 * 60 * 1000;
+
+
 async function maybeProbeReasoning(input: {
   profile: EndpointProfile;
   models: CachedProfile["models"];
   fetcher?: Fetcher;
   now?: () => Date;
-}): Promise<{ reasoning?: ReasoningProbeResult; warning?: string }> {
+  previousReasoning?: unknown;
+  force?: boolean;
+}): Promise<{ reasoning?: Record<string, ReasoningProbeResult>; warning?: string }> {
   const { profile, models } = input;
-  if (profile.api !== "openai-completions") return {};
+  if (profile.api !== "openai-completions" && profile.api !== "openai-responses") return {};
   if (!profile.discovery.reasoningProbe) return {};
-  const hasReasoningModel = Object.values(models).some((model) => model.candidates[0]?.model.reasoning ?? false);
-  if (!hasReasoningModel) return {};
-  let modelId: string | undefined;
-  for (const [id, model] of Object.entries(models)) {
-    if (model.available) {
-      modelId = id;
-      break;
+  const previous = migrateLegacyReasoningCache(input.previousReasoning);
+  const nowMs = (input.now ?? (() => new Date()))().getTime();
+  const reasoningModels = Object.values(models)
+    .filter((model) => model.available && (model.candidates[0]?.model.reasoning ?? false))
+    .map((model) => model.id)
+    .sort();
+  if (reasoningModels.length === 0) return {};
+
+  // Reuse fresh per-model evidence; probe the rest, oldest evidence first
+  // (never-probed models sort oldest so one bad model can't starve the rest).
+  const evidenceAge = (modelId: string): number => {
+    const cached = previous?.[modelId];
+    if (!cached) return Number.NEGATIVE_INFINITY;
+    const parsed = Date.parse(cached.probedAt);
+    return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+  };
+  const isUsable = (modelId: string): boolean => {
+    const cached = previous?.[modelId];
+    if (!cached || input.force) return false;
+    if (cached.error || cached.degraded) return false;
+    if (!cached.endpointIdentity || cached.endpointIdentity.api !== profile.api) return false;
+    if (Number.isNaN(Date.parse(cached.probedAt))) return false;
+    return nowMs - Date.parse(cached.probedAt) <= REASONING_EVIDENCE_TTL_MS;
+  };
+  const stale = reasoningModels
+    .filter((modelId) => !isUsable(modelId))
+    .sort((a, b) => evidenceAge(a) - evidenceAge(b));
+  const fresh = reasoningModels.filter((modelId) => !stale.includes(modelId));
+  const toProbe = stale.slice(0, REASONING_PROBE_MAX_MODELS);
+  const skipped = stale.slice(REASONING_PROBE_MAX_MODELS);
+
+  const results: Record<string, ReasoningProbeResult> = {};
+  for (const modelId of fresh) results[modelId] = previous![modelId];
+  const warnings: string[] = [];
+  for (const modelId of toProbe) {
+    try {
+      results[modelId] = await probeReasoningEfforts({ profile, modelId, fetcher: input.fetcher, now: input.now });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      results[modelId] = { probedAt: (input.now ?? (() => new Date()))().toISOString(), modelId, accepted: [], rejected: [], error: message };
+      warnings.push(`Reasoning probe failed for ${modelId}: ${message}`);
     }
   }
-  if (!modelId) return {};
-  try {
-    return { reasoning: await probeReasoningEfforts({ profile, modelId, fetcher: input.fetcher, now: input.now }) };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { reasoning: { probedAt: (input.now ?? (() => new Date()))().toISOString(), modelId, accepted: [], rejected: [], error: message }, warning: `Reasoning probe failed: ${message}` };
+  if (skipped.length > 0) {
+    warnings.push(`Reasoning probe budget reached (${REASONING_PROBE_MAX_MODELS} models/refresh) — ${skipped.length} model(s) unprobed: ${skipped.join(", ")}`);
   }
+  return { reasoning: Object.keys(results).length > 0 ? results : undefined, warning: warnings.length > 0 ? warnings.join(" ") : undefined };
 }
 
 export async function refreshProfileCache(input: {
@@ -373,6 +432,8 @@ export async function refreshProfileCache(input: {
   discoveryResult?: EndpointDiscoveryResult;
   previous?: CachedProfile;
   now?: () => Date;
+  /** Re-probe reasoning efforts even when cached evidence is still fresh. */
+  forceReasoning?: boolean;
 }): Promise<CachedProfile> {
   const discovery = input.discoveryResult ??
     (input.profile.discovery.mode === "manual"
@@ -409,7 +470,7 @@ export async function refreshProfileCache(input: {
       ];
     }
   }
-  const reasoning = await maybeProbeReasoning({ profile: input.profile, models, fetcher: input.fetcher, now: input.now });
+  const reasoning = await maybeProbeReasoning({ profile: input.profile, models, fetcher: input.fetcher, now: input.now, previousReasoning: input.previous?.reasoning, force: input.forceReasoning });
   if (reasoning.warning) warnings.push(reasoning.warning);
   return {
     refreshedAt: (input.now ?? (() => new Date()))().toISOString(),
@@ -418,7 +479,7 @@ export async function refreshProfileCache(input: {
     warnings,
     discoveryUrl: discovery.discoveryUrl,
     health: input.previous?.health,
-    reasoning: reasoning.reasoning ?? input.previous?.reasoning,
+    reasoning: reasoning.reasoning ?? migrateLegacyReasoningCache(input.previous?.reasoning),
   };
 }
 

@@ -1,4 +1,6 @@
 import type { DiscoveryCache, DoctorReport, FileLoadResult, ManagedConfig, ModelsConfig } from "./types.js";
+import { migrateLegacyReasoningCache, supportedEffortsFromResult } from "./reasoning.js";
+import type { ReasoningProbeResult } from "./types.js";
 
 export function buildDoctorReport(input: {
   configDir: string;
@@ -48,14 +50,17 @@ export function buildDoctorReport(input: {
         const ageDays = Math.floor((now.getTime() - new Date(cachedProfile.refreshedAt).getTime()) / (24 * 60 * 60 * 1000));
         if (ageDays > staleDays) pushIssue(issues, { level: "info", code: "cache_stale", profileId: profile.id, message: `Profile ${profile.id} was last refreshed ${ageDays}d ago. Run /endpoints refresh ${profile.id}.` });
       }
-      if (profile.api === "openai-completions") {
-        const reasoning = cachedProfile?.reasoning;
-        if (reasoning?.error) {
-          pushIssue(issues, { level: "warning", code: "reasoning_probe_failed", profileId: profile.id, message: `Profile ${profile.id} reasoning probe failed: ${reasoning.error}` });
-        } else if (reasoning && reasoning.accepted.length === 0) {
+      if (profile.api === "openai-completions" || profile.api === "openai-responses") {
+        const evidence = Object.values(migrateLegacyReasoningCache(cachedProfile?.reasoning) ?? ({} as Record<string, ReasoningProbeResult>));
+        const failed = evidence.filter((result) => result.error);
+        if (failed.length > 0) {
+          for (const result of failed) {
+            pushIssue(issues, { level: "warning", code: "reasoning_probe_failed", profileId: profile.id, message: `Profile ${profile.id} reasoning probe failed for ${result.modelId}: ${result.error}` });
+          }
+        } else if (evidence.length > 0 && evidence.every((result) => (supportedEffortsFromResult(result).efforts ?? ["x"]).length === 0)) {
           pushIssue(issues, { level: "warning", code: "reasoning_probe_rejected_all", profileId: profile.id, message: `Profile ${profile.id}: endpoint accepted no reasoning_effort value — reasoning models are registered as non-reasoning.` });
-        } else if (profile.discovery.reasoningProbe && !reasoning) {
-          pushIssue(issues, { level: "info", code: "reasoning_probe_pending", profileId: profile.id, message: `Profile ${profile.id}: discovery.reasoningProbe is on but no probe result is cached. Run /endpoints refresh ${profile.id} or /endpoints probe-reasoning ${profile.id}.` });
+        } else if (profile.discovery.reasoningProbe && evidence.length === 0) {
+          pushIssue(issues, { level: "info", code: "reasoning_probe_pending", profileId: profile.id, message: `Profile ${profile.id}: discovery.reasoningProbe is on but no probe evidence is cached. Run /endpoints refresh ${profile.id} or /endpoints probe-reasoning ${profile.id}.` });
         }
       }
       for (const warning of cachedProfile?.warnings ?? []) {

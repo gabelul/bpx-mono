@@ -1,7 +1,7 @@
 {
   "name": "@booplex/bpx-endpoints",
-  "version": "0.2.0",
-  "description": "Pi extension. Manage model endpoints — discovery, metadata sources, generated config, and a Pi-native TUI — through one /endpoints command.",
+  "version": "0.3.0",
+  "description": "Pi extension. Manage model endpoints \u2014 discovery, metadata sources, generated config, and a Pi-native TUI \u2014 through one /endpoints command.",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -22,9 +22,6 @@
   "homepage": "https://github.com/gabelul/bpx-mono/tree/main/packages/bpx-endpoints#readme",
   "bugs": {
     "url": "https://github.com/gabelul/bpx-mono/issues"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "publishConfig": {
     "access": "public"

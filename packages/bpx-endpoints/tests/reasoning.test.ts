@@ -185,11 +185,13 @@ describe("probeReasoningEfforts", () => {
       if (body.reasoning_effort === "low" || body.reasoning_effort === "medium") return jsonResponse({ ok: true });
       return jsonResponse({ error: { message: `Unexpected reasoning effort ${body.reasoning_effort}.` } }, 400);
     };
-    const result = await probeReasoningEfforts({ profile: profile(), modelId: "qwen-27b", fetcher });
+    const result = await probeReasoningEfforts({ profile: profile(), modelId: "qwen-27b", fetcher, values: ["low", "medium", "high", "xhigh"] });
     expect(result.error).toBeUndefined();
     expect(result.accepted).toEqual(["low", "medium"]);
     expect(result.rejected.map((r) => r.value)).toEqual(["high", "xhigh"]);
     expect(result.rejected.every((r) => r.effortRelated)).toBe(true);
+    // that body only echoes the rejected value — no declaration, nothing mined
+    expect(result.advertised).toBeUndefined();
   });
 
   it("aborts with a fatal error on auth failure instead of guessing", async () => {
@@ -230,28 +232,29 @@ describe("probeReasoningEfforts", () => {
     expect(seen).toEqual(["minimal", "max"]);
   });
 
-  it("treats timeouts as accepted when the server validates eagerly (slow generation, instant rejection)", async () => {
+  it("records timeouts as unknown — neither accepted nor rejected", async () => {
     const fetcher = async (_url: string, init?: RequestInit): Promise<Response> => {
       const body = JSON.parse(String(init?.body)) as { reasoning_effort?: string };
       if (body.reasoning_effort === "low" || body.reasoning_effort === "medium") throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
       return jsonResponse({ error: { message: `Unexpected reasoning effort ${body.reasoning_effort}.` } }, 400);
     };
-    const result = await probeReasoningEfforts({ profile: profile(), modelId: "qwen-27b", fetcher, timeoutMs: 100 });
+    const result = await probeReasoningEfforts({ profile: profile(), modelId: "qwen-27b", fetcher, timeoutMs: 100, values: ["low", "medium", "high", "xhigh"] });
     expect(result.error).toBeUndefined();
-    expect(result.accepted).toEqual(["low", "medium"]);
+    expect(result.accepted).toEqual([]);
+    expect(result.timedOut).toEqual(["low", "medium"]);
     expect(result.rejected.map((r) => r.value)).toEqual(["high", "xhigh"]);
   });
 
-  it("treats timeouts as accepted when some values already 200'd", async () => {
+  it("keeps timed-out values out of accepted even when other values 200'd", async () => {
     const fetcher = async (_url: string, init?: RequestInit): Promise<Response> => {
       const body = JSON.parse(String(init?.body)) as { reasoning_effort?: string };
       if (body.reasoning_effort === "low") return jsonResponse({ ok: true });
       throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
     };
-    const result = await probeReasoningEfforts({ profile: profile(), modelId: "m", fetcher, timeoutMs: 100 });
+    const result = await probeReasoningEfforts({ profile: profile(), modelId: "m", fetcher, timeoutMs: 100, values: ["low", "medium"] });
     expect(result.error).toBeUndefined();
-    expect(result.accepted).toContain("low");
-    expect(result.accepted).toContain("medium");
+    expect(result.accepted).toEqual(["low"]);
+    expect(result.timedOut).toEqual(["medium"]);
   });
 
   it("aborts with a fatal error when every value times out with no signal at all", async () => {

@@ -158,7 +158,7 @@ export type TestMessageResult =
   | { status: "success"; latencyMs: number; replyPreview: string }
   | { status: "cancelled" }
   | { status: "timeout" }
-  | { status: "failed"; message: string };
+  | { status: "failed"; message: string; /** Effort set mined from an effort-specific rejection body, when the endpoint declared one. */ learnedEfforts?: string[] };
 
 export interface ProfileHealth {
   lastTestAt?: string;
@@ -196,19 +196,43 @@ export interface CachedProfile {
   discoveryUrl?: string;
   /** Per-profile test health history, updated on every test message. */
   health?: ProfileHealth;
-  /** Live reasoning_effort probe outcome (openai-completions profiles with discovery.reasoningProbe). */
-  reasoning?: ReasoningProbeResult;
+  /**
+   * Per-model reasoning-effort evidence (openai-completions / openai-responses
+   * profiles with discovery.reasoningProbe, or mined from test-message 400s).
+   * Evidence is model-scoped: one model's accepted set is never reused for its
+   * siblings — launchers validate per model, and heterogeneous models behind
+   * one URL are the norm, not the exception.
+   */
+  reasoning?: Record<string, ReasoningProbeResult>;
 }
 
 /** Outcome of probing an endpoint for accepted reasoning_effort values. */
 export interface ReasoningProbeResult {
   probedAt: string;
-  /** Model id the probe sent requests as (first available reasoning model). */
+  /** Model id the evidence belongs to. */
   modelId: string;
   /** Effort values the endpoint accepted (HTTP 2xx). */
   accepted: string[];
   /** Effort values the endpoint rejected with 400/422, with the reason. */
   rejected: Array<{ value: string; status: number; detail: string; effortRelated: boolean }>;
+  /**
+   * Effort values the endpoint DECLARED as supported in a rejection body
+   * ("Supported types are xhigh, medium, and low"). Advertised sets are safe
+   * to send but not exhaustive — unlisted values are unknown, not rejected.
+   */
+  advertised?: string[];
+  /** How the advertised set was obtained, when it was. */
+  learnedFrom?: "probe" | "error-message";
+  /** Values whose outcome is unknown (timed out) — neither accepted nor rejected. */
+  timedOut?: string[];
+  /**
+   * Identity of the endpoint the evidence was captured from. Evidence whose
+   * identity no longer matches the profile's resolved baseUrl + api is stale
+   * even if fresh in time — a stable front URL can silently switch backends.
+   */
+  endpointIdentity?: { api: string; baseUrl: string };
+  /** True for v0.2.x-migrated evidence: shape-migrated, but its accepted set may contain timeout guesses — re-probe on first opportunity. */
+  degraded?: boolean;
   /** Fatal failure (auth, network, non-400 status) — the probe never completed. */
   error?: string;
 }

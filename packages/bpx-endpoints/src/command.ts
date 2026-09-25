@@ -26,6 +26,7 @@ import {
 import { mergeModelsConfig } from "./merge.js";
 import { fetchModelsDevCatalogCached } from "./models-dev.js";
 import { discoverEndpointModels, probeReasoningEfforts, refreshProfileCache, resolveProfileBaseUrl } from "./refresh.js";
+import { migrateLegacyReasoningCache } from "./reasoning.js";
 import { filterRuntimeProviderModels, getRuntimeCapabilities } from "./runtime.js";
 import { confirmAndTestProfileModel } from "./test-message.js";
 import { maskEffectiveConfig, maskSecret } from "./redact.js";
@@ -320,8 +321,54 @@ async function testSpecificProfileModel(pi: ExtensionAPI, ctx: ExtensionCommandC
     notify: (message, type) => ctx.ui.notify(message, type),
   });
   await recordTestHealth(paths, profileId, modelId, result);
+  if (result.status === "failed" && result.learnedEfforts?.length) {
+    await persistLearnedEfforts(pi, ctx, paths, profileId, modelId, result.learnedEfforts, result.message);
+  }
   if (result.status === "success" && offerSwitch) await offerModelSwitch(pi, ctx, profileId, modelId);
   return result;
+}
+
+/**
+ * A test message died on an effort-specific rejection whose body declared the
+ * endpoint's supported set — free evidence. Persist it as per-model reasoning
+ * evidence and regenerate immediately so the next call uses the right map.
+ */
+async function persistLearnedEfforts(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  paths: ReturnType<typeof getConfigPaths>,
+  profileId: string,
+  modelId: string,
+  efforts: string[],
+  failureDetail: string,
+): Promise<void> {
+  const profile = (await loadManagedConfig(paths)).value?.profiles[profileId];
+  if (!profile || (profile.api !== "openai-completions" && profile.api !== "openai-responses")) return;
+  const loaded = await loadCache(paths);
+  const cached = loaded.value?.profiles[profileId];
+  if (!loaded.value || !cached) return;
+  // A request that just failed contradicts any older acceptance for this
+  // model: the previous accepted set (possibly including the very value that
+  // just 400'd) is no longer trustworthy, so only the freshly advertised set
+  // is kept.
+  const existing = migrateLegacyReasoningCache(cached.reasoning) ?? {};
+  existing[modelId] = {
+    probedAt: new Date().toISOString(),
+    modelId,
+    accepted: [],
+    rejected: [{ value: "unknown", status: 400, detail: failureDetail.slice(0, 300), effortRelated: true }],
+    advertised: efforts,
+    learnedFrom: "error-message",
+    endpointIdentity: { api: profile.api, baseUrl: profile.baseUrl },
+  };
+  cached.reasoning = existing;
+  await writeCache(paths, loaded.value);
+  const managed = await loadManagedConfig(paths);
+  if (managed.value) {
+    const generated = await regenerateAndApply(pi, ctx, managed.value);
+    for (const issue of generated.issues) ctx.ui.notify(issue.message, notifyTypeForIssue(issue));
+  }
+  ctx.ui.notify(`Learned reasoning efforts [${efforts.join(", ")}] from the failure — thinkingLevelMap updated.`, "info");
 }
 
 /** Persist the latest test outcome on the profile's cached health record. */
@@ -418,7 +465,10 @@ async function probeReasoningAndRegenerate(
     ctx.ui.notify(`No cached profile ${profileId}. Refresh first.`, "warning");
     return undefined;
   }
-  cache.profiles[profileId].reasoning = result;
+  cache.profiles[profileId].reasoning = (() => {
+    const existing = migrateLegacyReasoningCache(cache.profiles[profileId].reasoning) ?? {};
+    return { ...existing, [result.modelId]: result };
+  })();
   await writeCache(paths, cache);
   const generated = await regenerateAndApply(pi, ctx, managed.value!);
   for (const issue of generated.issues) ctx.ui.notify(issue.message, notifyTypeForIssue(issue));

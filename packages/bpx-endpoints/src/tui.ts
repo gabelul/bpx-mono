@@ -1,4 +1,5 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type KeybindingsManager } from "@earendil-works/pi-tui";
+import { supportedEffortsFromResult } from "./reasoning.js";
 import type { DiscoveryCache, DoctorReport, ManagedConfig, ModelPolicy, ParameterSourceCandidate } from "./types.js";
 
 /**
@@ -257,7 +258,7 @@ export class ModelManagerOverlay implements Component {
     }
     const toggleWord = this.pendingPolicy.mode === "includeAll" ? "enter exclude/restore" : "enter include/remove";
     const hintParts = [toggleWord, "tab source", "ctrl+e edit fields", "ctrl+t test model", "ctrl+p policy", "ctrl+f filter", "ctrl+s save", "esc back"];
-    if (this.input.profile.api === "openai-completions") hintParts.splice(4, 0, "ctrl+r probe reasoning");
+    if (this.input.profile.api === "openai-completions" || this.input.profile.api === "openai-responses") hintParts.splice(4, 0, "ctrl+r probe reasoning");
     for (const hintLine of flowHints(hintParts, inner)) {
       lines.push(padLine(t.dim(hintLine), width));
     }
@@ -268,19 +269,22 @@ export class ModelManagerOverlay implements Component {
     ];
   }
 
-  /** One-line reasoning_effort status: manual override, probe outcome, or pending. */
+  /** One-line reasoning_effort status: manual override, per-model probe evidence, or pending. */
   private reasoningStatusLine(): string {
     const t = this.input.theme ?? plainOverlayTheme;
     const profile = this.input.profile;
-    const probe = this.input.cache.reasoning;
+    const modelId = this.filteredModels()[this.selected]?.id;
+    const evidence = modelId ? this.input.cache.reasoning?.[modelId] : undefined;
     if (profile.reasoningEfforts && profile.reasoningEfforts.length > 0) {
       return t.accent(`reasoning efforts: manual [${profile.reasoningEfforts.join(", ")}] — wins over probe`);
     }
-    if (probe?.error) return t.warning(`reasoning probe failed: ${probe.error}`);
-    if (probe) {
-      const accepted = probe.accepted.length > 0 ? probe.accepted.join(", ") : "none";
-      const rejectedHint = probe.accepted.length === 0 && probe.rejected.some((item) => !item.effortRelated) ? " (inconclusive)" : "";
-      return t.accent(`reasoning efforts: accepted [${accepted}]${rejectedHint} · ctrl+r re-probe`);
+    if (evidence?.error) return t.warning(`reasoning probe failed: ${evidence.error}`);
+    if (evidence) {
+      const derived = supportedEffortsFromResult(evidence);
+      const accepted = derived.efforts && derived.efforts.length > 0 ? derived.efforts.join(", ") : "none";
+      const source = evidence.advertised && evidence.advertised.length > 0 ? "endpoint-declared" : "probed";
+      const hint = derived.inconclusive ? " (inconclusive)" : "";
+      return t.accent(`reasoning efforts: ${source} [${accepted}]${hint} · ctrl+r re-probe`);
     }
     if (profile.discovery.reasoningProbe) return t.dim("reasoning probe pending — refresh or ctrl+r");
     return t.dim("reasoning: canonical low/medium/high — enable discovery.reasoningProbe or set reasoning efforts");

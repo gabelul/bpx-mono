@@ -1,5 +1,6 @@
 import type { Api, AssistantMessageEvent, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { apiKeySourceDescription, resolveApiKey, resolveProfileBaseUrl } from "./refresh.js";
+import { extractSupportedEfforts } from "./reasoning.js";
 import { KNOWN_APIS, type CachedProfile, type KnownApi, type EndpointProfile, type TestMessageResult } from "./types.js";
 
 type TestStreamFunction = (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AsyncIterable<AssistantMessageEvent>;
@@ -69,7 +70,9 @@ export async function confirmAndTestProfileModel(input: {
       return { status: "timeout" };
     }
     input.notify(classifyTestMessageError(input.profile, error), "error");
-    return { status: "failed", message: error instanceof Error ? error.message : String(error) };
+    const detail = error instanceof Error ? error.message : String(error);
+    const mined = extractSupportedEfforts(detail);
+    return { status: "failed", message: detail, ...(mined ? { learnedEfforts: mined } : {}) };
   }
 }
 

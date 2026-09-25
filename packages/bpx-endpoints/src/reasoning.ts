@@ -17,8 +17,10 @@
  *
  * The map is pure config data — this module has no network access. The probe
  * itself lives in refresh.ts (it needs the profile's auth plumbing); this file
- * only classifies and maps.
+ * only classifies, mines, and maps.
  */
+
+import type { ReasoningProbeResult } from "./types.js";
 
 /** Every pi thinking level. The map must cover all of them — no nulls, no gaps. */
 export const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -39,8 +41,15 @@ export const LEVEL_STRENGTH: Record<PiThinkingLevel, number> = {
   max: 4,
 };
 
-/** Semantic strength of known wire effort values. Unknown values sort after known ones. */
-const EFFORT_STRENGTH: Record<string, number> = { low: 1, medium: 2, high: 3, xhigh: 4 };
+/**
+ * Semantic strength of known wire effort values. Unknown values sort after known ones.
+ *
+ * Ranks are frozen API: `nearestEffortMap` compares these against LEVEL_STRENGTH,
+ * so inserting new values must never shift an existing value's rank (a shifted
+ * `medium` would silently change every registered map). `none` and `minimal`
+ * slot below `low`; existing low..xhigh keep their historical ranks.
+ */
+const EFFORT_STRENGTH: Record<string, number> = { none: 0, minimal: 0.5, low: 1, medium: 2, high: 3, xhigh: 4 };
 
 /**
  * Canonical complete map used when the endpoint's supported efforts are
@@ -58,8 +67,12 @@ export const CANONICAL_THINKING_LEVEL_MAP: Record<PiThinkingLevel, string> = {
   max: "high",
 };
 
-/** Effort values the probe tries against a live endpoint. */
-export const PROBE_EFFORT_VALUES = ["low", "medium", "high", "xhigh"] as const;
+/**
+ * Effort values the probe tries against a live endpoint. Empirical acceptance
+ * is the strongest evidence, but the list can only discover what it tries —
+ * `extractSupportedEfforts` catches declared sets that fall outside it.
+ */
+export const PROBE_EFFORT_VALUES = ["low", "medium", "high", "xhigh", "minimal", "none"] as const;
 
 export interface ReasoningBuildInput {
   reasoning: boolean;
@@ -97,6 +110,16 @@ export interface ReasoningBuildResult {
  */
 export function buildReasoningModel(input: ReasoningBuildInput): ReasoningBuildResult {
   if (!input.reasoning) return { reasoning: false };
+  // Inconclusive evidence is murky regardless of shape — keep reasoning with
+  // the canonical map and say so. (Checking this before the efforts branches
+  // matters: { inconclusive: true } arrives with efforts undefined.)
+  if (input.inconclusive && (input.supportedEfforts === undefined || input.supportedEfforts.length === 0)) {
+    return {
+      reasoning: true,
+      map: { ...CANONICAL_THINKING_LEVEL_MAP },
+      note: "Reasoning probe was inconclusive (timeouts or rejections unrelated to reasoning_effort) — using the canonical low/medium/high map.",
+    };
+  }
   const efforts = input.supportedEfforts;
   if (efforts !== undefined && efforts.length > 0) {
     return { reasoning: true, map: nearestEffortMap(efforts) };
@@ -104,7 +127,7 @@ export function buildReasoningModel(input: ReasoningBuildInput): ReasoningBuildR
   if (efforts !== undefined && !input.inconclusive) {
     return {
       reasoning: false,
-      note: "Endpoint accepted no reasoning_effort value — registered as non-reasoning. If the model thinks via a different parameter (e.g. chat_template_kwargs), set compat.thinkingFormat or reasoningEfforts in models.custom.json.",
+      note: "Endpoint accepted no reasoning_effort value — registered as non-reasoning. If the model thinks via another mechanism, keep reasoning: true and set model compat supportsReasoningEffort:false plus a thinkingFormat (e.g. 'qwen-chat-template' or 'chat-template' with chatTemplateKwargs), or list the accepted values via reasoningEfforts in models.custom.json.",
     };
   }
   if (efforts !== undefined && input.inconclusive) {
@@ -167,17 +190,145 @@ export function effortRelatedRejection(body: string): boolean {
   return false;
 }
 
+/** Wire effort values the miner is allowed to believe. Anything else is noise. */
+const KNOWN_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+/**
+ * Phrases under which an endpoint is actually DECLARING its accepted set (as
+ * opposed to echoing the rejected input back). Mining outside these windows
+ * would misread error bodies that quote the bad value the client just sent.
+ */
+const DECLARATION_PATTERN =
+  /\b(?:supported|accepted|allowed|valid|expected|must be|one of|only|choices are|should be)[^.\n]{0,80}/gi;
+
+const EFFORT_TOKEN_PATTERN = /\b(none|minimal|low|medium|high|xhigh)\b/gi;
+const DEFAULT_ANNOTATION = /\s*\((?:default|recommended)\)/gi;
+
+/**
+ * Mine an endpoint's advertised accepted-effort set from a rejection body.
+ *
+ * Parsing order, guarded against false positives:
+ * 1. If the body is JSON with an `error.message` string, only that message is
+ *    mined — request-echo fields ("request":{"reasoning_effort":"high"})
+ *    elsewhere in the body are ignored.
+ * 2. Otherwise the raw text is split into sentences and any sentence containing
+ *    a negated-support statement ("reasoning_effort is not supported") is
+ *    dropped before mining, so negations can't smuggle in the echoed value.
+ * 3. Surviving text is scanned for declaration phrases ("supported types are",
+ *    "must be one of", ...) and only effort-vocabulary tokens inside those
+ *    windows are believed.
+ *
+ * Returns undefined unless a confident declaration exists. The result is the
+ * endpoint's ADVERTISED set: safe-to-send values, not proof that unlisted
+ * values fail (HyperQwen advertises xhigh/medium/low but also accepts `none`).
+ */
+export function extractSupportedEfforts(body: string): string[] | undefined {
+  // Effort-relatedness is a property of the WHOLE body (the structured message
+  // alone may not name the parameter — "Supported types are ..." doesn't);
+  // extraction targets are narrower: the structured message if present, else
+  // the raw text with negated sentences dropped.
+  if (!effortRelatedRejection(body.toLowerCase())) return undefined;
+  const targets: string[] = [];
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown }; message?: unknown };
+    const message = parsed?.error?.message ?? parsed?.message;
+    if (typeof message === "string") targets.push(message);
+  } catch {
+    targets.push(body);
+  }
+  for (const text of targets) {
+    const mined = mineDeclarations(text);
+    if (mined) return mined;
+  }
+  return undefined;
+}
+
+const NEGATED_SUPPORT =
+  /\b(?:is|are|was|were|does|do)\s+not\s+(?:supported|accepted|allowed|implemented)|\bunsupported\b|\bnot\s+(?:a\s+)?(?:valid|recognized)\b/i;
+
+function mineDeclarations(text: string): string[] | undefined {
+  const lower = text.toLowerCase();
+  // Drop sentences that negate support — their neighboring words are context,
+  // not declarations, and the echoed request value often sits right there.
+  const sentences = lower.split(/[.\n]/).filter((sentence) => !NEGATED_SUPPORT.test(sentence));
+  const found = new Set<string>();
+  for (const sentence of sentences) {
+    for (const match of sentence.matchAll(DECLARATION_PATTERN)) {
+      const window = match[0].replace(DEFAULT_ANNOTATION, "");
+      for (const token of window.matchAll(EFFORT_TOKEN_PATTERN)) {
+        if ((KNOWN_EFFORTS as readonly string[]).includes(token[1])) found.add(token[1]);
+      }
+    }
+  }
+  if (found.size === 0) return undefined;
+  return orderEfforts([...found]);
+}
+
 /** Chat completions endpoint for a profile baseUrl (baseUrl may already end in /v1). */
 export function chatCompletionsUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
 }
 
-function orderEfforts(accepted: string[]): string[] {
+/** Responses endpoint for a profile baseUrl (baseUrl may already end in /v1). */
+export function responsesUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/responses`;
+}
+
+export function orderEfforts(accepted: string[]): string[] {
   const known = accepted.filter((value) => EFFORT_STRENGTH[value] !== undefined).sort((a, b) => EFFORT_STRENGTH[a]! - EFFORT_STRENGTH[b]!);
   const unknown = accepted.filter((value) => EFFORT_STRENGTH[value] === undefined);
   return [...known, ...unknown];
 }
-
 function effortStrength(value: string): number {
   return EFFORT_STRENGTH[value] ?? 100 + value.length;
+}
+
+/**
+ * Migrate legacy single-result reasoning caches (v0.2.x stored one probe
+ * outcome per profile) into the per-model shape, keyed by the model the probe
+ * actually ran on. Anything unreadable is dropped — stale evidence must never
+ * masquerade as fresh.
+ */
+export function migrateLegacyReasoningCache(previous: unknown): Record<string, ReasoningProbeResult> | undefined {
+  if (previous === undefined || previous === null) return undefined;
+  if (typeof previous !== "object") return undefined;
+  const record = previous as Record<string, unknown>;
+  if (typeof record.probedAt === "string" && typeof record.modelId === "string") {
+    return { [record.modelId]: previous as ReasoningProbeResult };
+  }
+  const out: Record<string, ReasoningProbeResult> = {};
+  for (const [key, value] of Object.entries(record)) {
+    const candidate = value as ReasoningProbeResult;
+    if (candidate && typeof candidate === "object" && typeof candidate.probedAt === "string" && typeof candidate.modelId === "string") {
+      out[key] = candidate;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Collapse one model's probe evidence into the effort set it is safe to send.
+ *
+ * Evidence sources, strongest first: values the endpoint accepted (empirical),
+ * values it declared in a rejection body (advertised). Contradictions resolve
+ * against safety: a value the endpoint rejected with an effort-specific error
+ * is never sent, even if some other evidence mentions it. Values that timed
+ * out are unknown, not accepted: queued servers, delayed validation, and
+ * heterogeneous routing all make silence ambiguous.
+ *
+ * Returns efforts:[] when every candidate was cleanly effort-rejected (the
+ * endpoint speaks no reasoning_effort), and inconclusive:true when the evidence
+ * is too murky to register anything (timeouts, unrelated errors).
+ */
+export function supportedEffortsFromResult(result: ReasoningProbeResult): { efforts?: string[]; inconclusive: boolean } {
+  const rejectedValues = new Set(result.rejected.filter((item) => item.effortRelated).map((item) => item.value));
+  const base = new Set<string>();
+  for (const value of [...result.accepted, ...(result.advertised ?? [])]) {
+    if (!rejectedValues.has(value)) base.add(value);
+  }
+  if (base.size > 0) return { efforts: orderEfforts([...base]), inconclusive: false };
+  const cleanlyRejected = result.rejected.length > 0 && result.rejected.every((item) => item.effortRelated);
+  const timedOut = result.timedOut ?? [];
+  if (cleanlyRejected && timedOut.length === 0) return { efforts: [], inconclusive: false };
+  return { inconclusive: true };
 }
