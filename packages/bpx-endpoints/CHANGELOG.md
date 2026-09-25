@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/gabelul/bpx-mono/compare/bpx-endpoints-v0.2.0...bpx-endpoints-v0.3.0) (2026-09-25)
+
+
+### Features
+
+* **bpx-endpoints:** reasoning evidence per model, error mining, responses coverage, true off ([152dec4](https://github.com/gabelul/bpx-mono/commit/152dec4d756d07822e083911ed1b5df19ba1adf0))
+
+
+### Bug Fixes
+
+* **bpx-endpoints:** close third-review gaps in reasoning evidence and gates ([96c4c2c](https://github.com/gabelul/bpx-mono/commit/96c4c2cb9b27a18f80c9e4166b0091d4d7f36cc1))
+
 ## 0.3.0 — 2026-09-25
 
 ### Fixes
