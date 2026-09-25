@@ -151,7 +151,7 @@ export function normalizeProfile(input: {
 				: { mode: "includeAll", exclude: input.modelPolicy?.exclude ?? [] },
 		parameterSourceSelections: input.parameterSourceSelections,
 		modelOverrides: input.modelOverrides,
-		reasoningEfforts: input.reasoningEfforts ? normalizeModelIds(input.reasoningEfforts) : undefined,
+		reasoningEfforts: input.reasoningEfforts && input.reasoningEfforts.length > 0 ? normalizeModelIds(input.reasoningEfforts) : undefined,
 	};
 	validateProfile(profile);
 	return profile;

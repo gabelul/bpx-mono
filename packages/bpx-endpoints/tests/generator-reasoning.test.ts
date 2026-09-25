@@ -107,6 +107,20 @@ describe("generateModelsConfig reasoning policy", () => {
     expect(generated.thinkingLevelMap).toEqual({ off: "low", minimal: "low", low: "low", medium: "medium", high: "medium", xhigh: "medium", max: "medium" });
   });
 
+  it("an EMPTY manual reasoningEfforts list means cleared: evidence governs, not non-reasoning", () => {
+    const model = builtInModel("qwen-27b");
+    const probe = reasoningProbe(["low", "medium"]);
+    const configCleared: ManagedConfig = { version: 1, profiles: { "endpoint-1": profile({ reasoningEfforts: [] }) } };
+    const result = generateModelsConfig(
+      configCleared,
+      cache({ "endpoint-1": cachedProfile({ "qwen-27b": cachedModel("qwen-27b", model) }, { [probe.modelId]: probe }) }),
+      runtime([model]),
+    );
+    const generated = firstModel(result);
+    expect(generated.reasoning).toBe(true);
+    expect(generated.thinkingLevelMap).toEqual({ off: "low", minimal: "low", low: "low", medium: "medium", high: "medium", xhigh: "medium", max: "medium" });
+  });
+
   it("manual reasoningEfforts win over probe results", () => {
     const model = builtInModel("qwen-27b");
     const probe = reasoningProbe(["low", "medium"]);

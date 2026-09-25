@@ -137,7 +137,9 @@ function applyReasoningPolicy(
     return { model: { ...model, thinkingLevelMap: filled } };
   }
 
-  if (profile.reasoningEfforts !== undefined) {
+  // An empty manual list means "cleared", not "endpoint supports nothing":
+  // non-reasoning registration is the evidence layer's job, not the form's.
+  if (profile.reasoningEfforts !== undefined && profile.reasoningEfforts.length > 0) {
     const built = buildReasoningModel({ reasoning: true, supportedEfforts: profile.reasoningEfforts });
     return { model: { ...model, reasoning: built.reasoning, thinkingLevelMap: built.map }, note: built.note };
   }
