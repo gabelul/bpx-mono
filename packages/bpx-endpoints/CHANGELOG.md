@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/gabelul/bpx-mono/compare/bpx-endpoints-v0.3.0...bpx-endpoints-v0.3.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **bpx-endpoints:** treat an empty manual reasoningEfforts list as unset ([00e81a1](https://github.com/gabelul/bpx-mono/commit/00e81a1363d7347883eefdd439ccfcbd089a69d0))
+
 ## [0.3.0](https://github.com/gabelul/bpx-mono/compare/bpx-endpoints-v0.2.0...bpx-endpoints-v0.3.0) (2026-09-25)
 
 
