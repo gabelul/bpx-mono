@@ -1,4 +1,5 @@
 import { Input, Key, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
+import { supportsEffortPolicy } from "./reasoning.js";
 import { normalizeProfile } from "./config.js";
 import { ModelManagerOverlay, boxBottom, boxTop, frameLine, plainOverlayTheme, type ModelOverlayChanges, type ModelOverlayState, type OverlayTheme } from "./tui.js";
 import type {
@@ -658,7 +659,7 @@ export class EndpointManagerSessionOverlay implements Component, Focusable {
       if (field === "modelsPath") return this.draft.discoveryMode === "endpoint";
       if (field === "modelsUrl") return this.draft.discoveryMode === "endpoint";
       if (field === "probe") return this.draft.discoveryMode === "endpoint";
-      if (field === "reasoningProbe" || field === "reasoningEfforts") return this.draft.api === "openai-completions";
+      if (field === "reasoningProbe" || field === "reasoningEfforts") return supportsEffortPolicy(this.draft.api);
       if (field === "modelIds") return this.draft.discoveryMode === "manual";
       return true;
     });
@@ -835,7 +836,7 @@ function fieldDescription(field: FormField): string {
     modelsPath: "Path appended to Base URL during discovery.",
     modelsUrl: "Optional full discovery URL. Overrides Base URL + path when set (e.g. Ollama's http://host:11434/api/tags).",
     probe: "On 404/empty discovery, try /models, /v1/models, /api/tags, /api/models at the origin.",
-    reasoningProbe: "Probe the endpoint for accepted reasoning_effort values on refresh (openai-completions only).",
+    reasoningProbe: "Probe the endpoint for accepted reasoning effort values on refresh (openai-completions / openai-responses).",
     reasoningEfforts: "Comma separated reasoning_effort values this endpoint accepts. Wins over probe results.",
     modelIds: "Comma or whitespace separated exact model IDs.",
     headers: "JSON object. Values may use literal, $ENV, or !command syntax.",

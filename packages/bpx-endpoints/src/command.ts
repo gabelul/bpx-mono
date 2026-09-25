@@ -26,7 +26,7 @@ import {
 import { mergeModelsConfig } from "./merge.js";
 import { fetchModelsDevCatalogCached } from "./models-dev.js";
 import { discoverEndpointModels, probeReasoningEfforts, refreshProfileCache, resolveProfileBaseUrl } from "./refresh.js";
-import { migrateLegacyReasoningCache } from "./reasoning.js";
+import { migrateLegacyReasoningCache, supportsEffortPolicy } from "./reasoning.js";
 import { filterRuntimeProviderModels, getRuntimeCapabilities } from "./runtime.js";
 import { confirmAndTestProfileModel } from "./test-message.js";
 import { maskEffectiveConfig, maskSecret } from "./redact.js";
@@ -356,7 +356,10 @@ async function persistLearnedEfforts(
     probedAt: new Date().toISOString(),
     modelId,
     accepted: [],
-    rejected: [{ value: "unknown", status: 400, detail: failureDetail.slice(0, 300), effortRelated: true }],
+    // The wrapped pi error does not reliably carry the HTTP status - do not
+    // invent one. value stays "unknown" because pi does not expose the wire
+    // effort it sent; advertised drives the map either way.
+    rejected: [{ value: "unknown", detail: failureDetail.slice(0, 300), effortRelated: true }],
     advertised: efforts,
     learnedFrom: "error-message",
     endpointIdentity: { api: profile.api, baseUrl: profile.baseUrl },
@@ -406,17 +409,17 @@ async function probeReasoningCommand(pi: ExtensionAPI, ctx: ExtensionCommandCont
     ctx.ui.notify(managed.error ?? "No bpx-endpoints.json found.", "error");
     return;
   }
-  let targets = Object.values(managed.value.profiles).filter((profile) => profile.enabled && profile.api === "openai-completions");
+  let targets = Object.values(managed.value.profiles).filter((profile) => profile.enabled && supportsEffortPolicy(profile.api));
   if (profileId) {
     const profile = managed.value.profiles[profileId];
     if (!profile) {
       ctx.ui.notify(`Profile ${profileId} not found`, "error");
       return;
     }
-    targets = profile.api === "openai-completions" ? [profile] : [];
+    targets = supportsEffortPolicy(profile.api) ? [profile] : [];
   }
   if (targets.length === 0) {
-    ctx.ui.notify(profileId ? `Profile ${profileId} is not an openai-completions endpoint — probing only applies to that protocol.` : "No enabled openai-completions endpoints to probe.", "warning");
+    ctx.ui.notify(profileId ? `Profile ${profileId} does not support effort probing (openai-completions / openai-responses only).` : "No enabled endpoints supporting effort probing.", "warning");
     return;
   }
   let succeeded = 0;
@@ -833,7 +836,7 @@ export function renderEndpointSummary(profile: EndpointProfile, extraLine?: stri
     `modelsPath: ${profile.discovery.modelsPath}`,
     `policy: ${policy}`,
   ];
-  if (profile.api === "openai-completions") {
+  if (supportsEffortPolicy(profile.api)) {
     if (profile.reasoningEfforts && profile.reasoningEfforts.length > 0) lines.push(`reasoningEfforts: manual [${profile.reasoningEfforts.join(", ")}]`);
     lines.push(`reasoningProbe: ${profile.discovery.reasoningProbe ? "on" : "off"}`);
   }

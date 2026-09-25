@@ -77,14 +77,23 @@ describe("supportedEffortsFromResult", () => {
     expect(supportedEffortsFromResult(result).efforts).toEqual(["low"]);
   });
 
-  it("empty efforts only when every candidate was cleanly effort-rejected", () => {
-    const clean: ReasoningProbeResult = {
+  it("empty efforts only when the FULL vocabulary was cleanly effort-rejected", () => {
+    const all = ["none", "minimal", "low", "medium", "high", "xhigh"];
+    const full: ReasoningProbeResult = {
+      probedAt: "2026-09-25T00:00:00Z",
+      modelId: "m",
+      accepted: [],
+      rejected: all.map((value) => ({ value, status: 400, detail: "nope", effortRelated: true })),
+    };
+    expect(supportedEffortsFromResult(full)).toEqual({ efforts: [], inconclusive: false });
+    // Partial coverage proves nothing about the untried values: inconclusive.
+    const partial: ReasoningProbeResult = {
       probedAt: "2026-09-25T00:00:00Z",
       modelId: "m",
       accepted: [],
       rejected: [{ value: "low", status: 400, detail: "nope", effortRelated: true }],
     };
-    expect(supportedEffortsFromResult(clean)).toEqual({ efforts: [], inconclusive: false });
+    expect(supportedEffortsFromResult(partial)).toEqual({ inconclusive: true });
   });
 
   it("timeouts are unknown, not rejections — murky evidence is inconclusive", () => {
@@ -144,7 +153,7 @@ describe("buildReasoningModel notes mention the pi-native escape hatch", () => {
 });
 
 describe("migrateLegacyReasoningCache", () => {
-  it("wraps a v0.2.x single result under its own modelId", () => {
+  it("wraps a v0.2.x single result under its own modelId, flagged degraded", () => {
     const legacy: ReasoningProbeResult = {
       probedAt: "2026-09-05T00:00:00Z",
       modelId: "qwen-27b",
@@ -152,12 +161,27 @@ describe("migrateLegacyReasoningCache", () => {
       rejected: [],
     };
     const migrated = migrateLegacyReasoningCache(legacy);
-    expect(migrated).toEqual({ "qwen-27b": legacy });
+    expect(migrated).toEqual({ "qwen-27b": { ...legacy, degraded: true } });
+  });
+
+  it("records that already carry an endpoint identity migrate untouched", () => {
+    const modern: ReasoningProbeResult = {
+      probedAt: "2026-09-25T00:00:00Z",
+      modelId: "qwen-27b",
+      accepted: ["low"],
+      rejected: [],
+      endpointIdentity: { api: "openai-completions", baseUrl: "http://x/v1" },
+    };
+    expect(migrateLegacyReasoningCache({ "qwen-27b": modern })).toEqual({ "qwen-27b": modern });
   });
 
   it("keeps already-per-model records and drops junk", () => {
+    // Identity-less per-model records (pre-identity era) are flagged degraded;
+    // the point of migration is shape + trust, and these need a re-probe.
     const perModel = { "a-model": { probedAt: "2026-09-05T00:00:00Z", modelId: "a-model", accepted: ["low"], rejected: [] } };
-    expect(migrateLegacyReasoningCache(perModel)).toEqual(perModel);
+    expect(migrateLegacyReasoningCache(perModel)).toEqual({
+      "a-model": { ...perModel["a-model"], degraded: true },
+    });
     expect(migrateLegacyReasoningCache({ garbage: true })).toBeUndefined();
     expect(migrateLegacyReasoningCache(undefined)).toBeUndefined();
   });

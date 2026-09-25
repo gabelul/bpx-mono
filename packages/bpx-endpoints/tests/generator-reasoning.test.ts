@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { generateModelsConfig } from "../src/generator.js";
+import { CANONICAL_THINKING_LEVEL_MAP } from "../src/reasoning.js";
 import type { BuiltInModelRecord, CachedModel, CachedProfile, DiscoveryCache, EndpointProfile, ManagedConfig, ModelConfig, ReasoningProbeResult, RuntimeCapabilities } from "../src/types.js";
 
 const REASONING_SOURCE_MAP = { off: null, minimal: null, low: "low", medium: "medium", high: null, xhigh: "xhigh", max: null };
@@ -70,7 +71,7 @@ function runtime(builtIn: BuiltInModelRecord[]): RuntimeCapabilities {
 
 function reasoningProbe(accepted: string[], rejected: ReasoningProbeResult["rejected"] = []): ReasoningProbeResult {
   return {
-    probedAt: "2026-08-29T00:00:00.000Z",
+    probedAt: new Date().toISOString(),
     modelId: "qwen-27b",
     accepted,
     rejected,
@@ -121,7 +122,15 @@ describe("generateModelsConfig reasoning policy", () => {
 
   it("registers reasoning models as non-reasoning when the endpoint accepted nothing cleanly, with a warning", () => {
     const model = builtInModel("qwen-27b");
-    const probe = reasoningProbe([], [{ value: "low", status: 400, detail: "Unexpected reasoning effort low.", effortRelated: true }]);
+    const probe = reasoningProbe(
+      [],
+      ["none", "minimal", "low", "medium", "high", "xhigh"].map((value) => ({
+        value,
+        status: 400,
+        detail: "Unexpected reasoning effort low.",
+        effortRelated: true,
+      })),
+    );
     const result = generateModelsConfig(
       config,
       cache({ "endpoint-1": cachedProfile({ "qwen-27b": cachedModel("qwen-27b", model) }, { [probe.modelId]: probe }) }),
@@ -299,3 +308,74 @@ describe("v0.3.0 policy: per-model evidence, responses coverage, null precedence
 });
 
 const HYPERQWEN_LIKE = "Unexpected reasoning effort minimal. Supported types are xhigh (default), medium, and low.";
+
+describe("evidence trust at generate time (advisor regressions)", () => {
+  const identity = { api: "openai-completions", baseUrl: "http://localhost:1234/v1" };
+
+  function evidenceWith(overrides: Partial<ReasoningProbeResult>): ReasoningProbeResult {
+    return {
+      probedAt: new Date().toISOString(),
+      modelId: "qwen-27b",
+      accepted: ["xhigh", "medium", "low"],
+      rejected: [],
+      endpointIdentity: identity,
+      ...overrides,
+    };
+  }
+
+  it("ignores expired evidence — freshness applies when generating, not just refreshing", () => {
+    const stale = evidenceWith({ probedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() });
+    const result = generateModelsConfig(
+      config,
+      cache({ "endpoint-1": cachedProfile({ "qwen-27b": cachedModel("qwen-27b", builtInModel("qwen-27b")) }, { [stale.modelId]: stale }) }),
+      runtime([builtInModel("qwen-27b")]),
+    );
+    // expired -> canonical map, not the probed xhigh/medium/low set
+    expect(firstModel(result).thinkingLevelMap).toEqual(CANONICAL_THINKING_LEVEL_MAP);
+  });
+
+  it("ignores future-dated evidence (invalid timestamps)", () => {
+    const future = evidenceWith({ probedAt: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString() });
+    const result = generateModelsConfig(
+      config,
+      cache({ "endpoint-1": cachedProfile({ "qwen-27b": cachedModel("qwen-27b", builtInModel("qwen-27b")) }, { [future.modelId]: future }) }),
+      runtime([builtInModel("qwen-27b")]),
+    );
+    expect(firstModel(result).thinkingLevelMap).toEqual(CANONICAL_THINKING_LEVEL_MAP);
+  });
+
+  it("ignores degraded (migrated v0.2.x) evidence", () => {
+    const degraded = evidenceWith({ degraded: true });
+    const result = generateModelsConfig(
+      config,
+      cache({ "endpoint-1": cachedProfile({ "qwen-27b": cachedModel("qwen-27b", builtInModel("qwen-27b")) }, { [degraded.modelId]: degraded }) }),
+      runtime([builtInModel("qwen-27b")]),
+    );
+    expect(firstModel(result).thinkingLevelMap).toEqual(CANONICAL_THINKING_LEVEL_MAP);
+  });
+
+  it("ignores evidence captured from a different baseUrl (profile repointed)", () => {
+    const foreign = evidenceWith({ endpointIdentity: { api: "openai-completions", baseUrl: "http://other-host:9/v1" } });
+    const result = generateModelsConfig(
+      config,
+      cache({ "endpoint-1": cachedProfile({ "qwen-27b": cachedModel("qwen-27b", builtInModel("qwen-27b")) }, { [foreign.modelId]: foreign }) }),
+      runtime([builtInModel("qwen-27b")]),
+    );
+    expect(firstModel(result).thinkingLevelMap).toEqual(CANONICAL_THINKING_LEVEL_MAP);
+  });
+
+  it("legacy-shaped caches (no identity) normalize to no evidence, not a crash", () => {
+    const legacySingle: ReasoningProbeResult = {
+      probedAt: new Date().toISOString(),
+      modelId: "qwen-27b",
+      accepted: ["low"],
+      rejected: [],
+    };
+    const result = generateModelsConfig(
+      config,
+      cache({ "endpoint-1": { refreshedAt: new Date().toISOString(), endpointModels: [], warnings: [], models: { "qwen-27b": cachedModel("qwen-27b", builtInModel("qwen-27b")) }, reasoning: legacySingle as unknown as Record<string, ReasoningProbeResult> } }),
+      runtime([builtInModel("qwen-27b")]),
+    );
+    expect(firstModel(result).reasoning).toBe(true);
+  });
+});

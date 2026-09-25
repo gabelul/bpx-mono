@@ -17,7 +17,7 @@ const captured: Array<{ url: string; body: Record<string, unknown> }> = [];
 let server: Server;
 let baseUrl = "";
 
-function makeModel(api: KnownApi): Model<Api> {
+function makeModel(api: KnownApi, mapOverride?: Record<string, string | null>): Model<Api> {
   return {
     id: "qwen3.8-27b",
     name: "qwen3.8-27b",
@@ -25,7 +25,7 @@ function makeModel(api: KnownApi): Model<Api> {
     provider: "test-provider",
     baseUrl: `${baseUrl}/v1`,
     reasoning: true,
-    thinkingLevelMap: {
+    thinkingLevelMap: mapOverride ?? {
       off: "none",
       minimal: "low",
       low: "low",
@@ -41,13 +41,18 @@ function makeModel(api: KnownApi): Model<Api> {
   } as unknown as Model<Api>;
 }
 
-async function streamOnce(api: KnownApi, thinkingLevel: "off" | "medium" | "xhigh"): Promise<void> {
-  const model = makeModel(api);
+type WireLevel = "off" | "medium" | "xhigh" | "omitted";
+
+async function streamOnce(api: KnownApi, thinkingLevel: WireLevel, mapOverride?: Record<string, string | null>): Promise<void> {
+  const model = makeModel(api, mapOverride);
   const context: Context = { messages: [{ role: "user", content: "Say OK", timestamp: Date.now() }] };
-  // pi-ai's ThinkingLevel type omits "off", but the adapters accept it at
-  // runtime (it routes through thinkingLevelMap like any level — that routing
-  // is exactly what this file verifies on the wire).
-  const options: SimpleStreamOptions = { apiKey: "test-key", maxTokens: 32, reasoning: thinkingLevel as ThinkingLevel };
+  // pi-ai's ThinkingLevel type omits "off", but streamSimple accepts it at
+  // runtime and normalizes it to an OMITTED reasoningEffort — which is how a
+  // caller expressing "off" arrives here. The omitted case below pins that.
+  const options: SimpleStreamOptions =
+    thinkingLevel === "omitted"
+      ? { apiKey: "test-key", maxTokens: 32 }
+      : { apiKey: "test-key", maxTokens: 32, reasoning: thinkingLevel as ThinkingLevel };
   for await (const _event of streamSimple(model, context, options) as AsyncIterable<AssistantMessageEvent>) {
     // drain
   }
@@ -137,5 +142,19 @@ describe("pi transport sends the mapped wire values (real adapters)", () => {
     await streamOnce("openai-responses", "medium");
     const reasoning = captured[0]!.body.reasoning as { effort?: string } | undefined;
     expect(reasoning?.effort).toBe("medium");
+  });
+
+  it("openai-completions: OMITTED reasoning (the public off contract) sends map.off", async () => {
+    captured.length = 0;
+    // streamSimple normalizes reasoning:"off" to an omitted reasoningEffort,
+    // then the adapter sends thinkingLevelMap.off — the full caller contract.
+    await streamOnce("openai-completions", "omitted");
+    expect(captured[0]!.body.reasoning_effort).toBe("none");
+  });
+
+  it("openai-completions: off:null means unsupported — no reasoning_effort on the wire", async () => {
+    captured.length = 0;
+    await streamOnce("openai-completions", "omitted", { off: null, minimal: "low", low: "low", medium: "medium", high: "medium", xhigh: "xhigh", max: "xhigh" });
+    expect(captured[0]!.body).not.toHaveProperty("reasoning_effort");
   });
 });

@@ -63,7 +63,7 @@ export interface DiscoveryConfig {
   modelsUrl?: string;
   /** Opt-in: when the configured URL 404s, shape-misses, or returns empty, probe common paths. */
   probe?: boolean;
-  /** Opt-in: probe the endpoint for accepted reasoning_effort values on refresh (openai-completions profiles only). */
+  /** Opt-in: probe the endpoint for accepted reasoning effort values on refresh (openai-completions / openai-responses profiles). */
   reasoningProbe?: boolean;
   modelIds?: string[];
 }
@@ -214,7 +214,7 @@ export interface ReasoningProbeResult {
   /** Effort values the endpoint accepted (HTTP 2xx). */
   accepted: string[];
   /** Effort values the endpoint rejected with 400/422, with the reason. */
-  rejected: Array<{ value: string; status: number; detail: string; effortRelated: boolean }>;
+  rejected: Array<{ value: string; status?: number; detail: string; effortRelated: boolean }>;
   /**
    * Effort values the endpoint DECLARED as supported in a rejection body
    * ("Supported types are xhigh, medium, and low"). Advertised sets are safe

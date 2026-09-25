@@ -1,5 +1,5 @@
 import { generatedDefaultModel } from "./candidates.js";
-import { buildReasoningModel, CANONICAL_THINKING_LEVEL_MAP, isCompleteThinkingLevelMap, nearestEffortMap, supportedEffortsFromResult, PI_THINKING_LEVELS } from "./reasoning.js";
+import { buildReasoningModel, CANONICAL_THINKING_LEVEL_MAP, isCompleteThinkingLevelMap, migrateLegacyReasoningCache, nearestEffortMap, REASONING_EVIDENCE_TTL_MS, supportedEffortsFromResult, PI_THINKING_LEVELS } from "./reasoning.js";
 import type { CachedModel, DoctorIssue, ManagedConfig, ModelConfig, ModelsConfig, EndpointProfile, ReasoningProbeResult, RuntimeCapabilities } from "./types.js";
 
 export function generateModelsConfig(
@@ -17,7 +17,10 @@ export function generateModelsConfig(
       continue;
     }
     const profileCache = cache.profiles[profile.id];
-    const built = buildModelsForProfile(profile, profileCache?.models ?? {}, profile.api, managed.modelOverrides ?? {}, profileCache?.reasoning);
+    // Load-boundary normalization: on-disk caches may still hold the v0.2.x
+    // single-result shape - migrate before any per-model lookup.
+    const reasoning = migrateLegacyReasoningCache(profileCache?.reasoning);
+    const built = buildModelsForProfile(profile, profileCache?.models ?? {}, profile.api, managed.modelOverrides ?? {}, reasoning);
     const models = built.models;
     if (models.length === 0) {
       issues.push({ level: "warning", code: "no_models_generated", profileId: profile.id, message: `Endpoint ${profile.id} has no models to generate.` });
@@ -109,12 +112,20 @@ function applyReasoningPolicy(
   // Evidence captured from a different endpoint identity (profile repointed,
   // front URL switched backends) is stale even when fresh in time.
   const baseUrlComparable = !/[$!]/.test(profile.baseUrl);
+  const parsedAt = evidence !== undefined ? Date.parse(evidence.probedAt) : Number.NaN;
+  const nowMs = Date.now();
   const usableEvidence =
     evidence !== undefined &&
     evidence.error === undefined &&
+    !evidence.degraded &&
     evidence.endpointIdentity !== undefined &&
     evidence.endpointIdentity.api === effectiveApi &&
-    (!baseUrlComparable || evidence.endpointIdentity.baseUrl === profile.baseUrl);
+    (!baseUrlComparable || evidence.endpointIdentity.baseUrl === profile.baseUrl) &&
+    // Freshness is enforced at GENERATE time too, not only when refreshing:
+    // a cache written days ago must not silently drive today's maps.
+    !Number.isNaN(parsedAt) &&
+    parsedAt <= nowMs &&
+    nowMs - parsedAt <= REASONING_EVIDENCE_TTL_MS;
 
   if (overrideAuthoredMap && model.thinkingLevelMap !== undefined) {
     const authored = model.thinkingLevelMap;

@@ -1,5 +1,5 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth, type Component, type KeybindingsManager } from "@earendil-works/pi-tui";
-import { supportedEffortsFromResult } from "./reasoning.js";
+import { migrateLegacyReasoningCache, supportedEffortsFromResult, supportsEffortPolicy } from "./reasoning.js";
 import type { DiscoveryCache, DoctorReport, ManagedConfig, ModelPolicy, ParameterSourceCandidate } from "./types.js";
 
 /**
@@ -219,7 +219,7 @@ export class ModelManagerOverlay implements Component {
     lines.push(padLine(titleWithHint(title, dirtyHint, inner), width));
     const summary = [`policy ${this.pendingPolicy.mode}`, `${included}/${allModels.length} included`, `filter ${this.filter}`];
     lines.push(padLine(t.muted(summary.join(" · ")), width));
-    if (this.input.profile.api === "openai-completions") lines.push(padLine(this.reasoningStatusLine(), width));
+    if (supportsEffortPolicy(this.input.profile.api)) lines.push(padLine(this.reasoningStatusLine(), width));
     lines.push(padLine(this.query ? `search: ${this.query}${t.accent("▌")}` : t.dim("type to search"), width));
     lines.push(padLine("", width));
 
@@ -274,7 +274,7 @@ export class ModelManagerOverlay implements Component {
     const t = this.input.theme ?? plainOverlayTheme;
     const profile = this.input.profile;
     const modelId = this.filteredModels()[this.selected]?.id;
-    const evidence = modelId ? this.input.cache.reasoning?.[modelId] : undefined;
+    const evidence = modelId ? migrateLegacyReasoningCache(this.input.cache.reasoning)?.[modelId] : undefined;
     if (profile.reasoningEfforts && profile.reasoningEfforts.length > 0) {
       return t.accent(`reasoning efforts: manual [${profile.reasoningEfforts.join(", ")}] — wins over probe`);
     }

@@ -284,9 +284,25 @@ function effortStrength(value: string): number {
 }
 
 /**
- * Migrate legacy single-result reasoning caches (v0.2.x stored one probe
- * outcome per profile) into the per-model shape, keyed by the model the probe
- * actually ran on. Anything unreadable is dropped — stale evidence must never
+ * Effort probing and per-model reasoning policy apply to both OpenAI wire
+ * protocols. Gate UI, commands, and policy on this — not on raw api equality
+ * with openai-completions, which leaves responses endpoints unmanaged.
+ */
+export function supportsEffortPolicy(api: string | undefined): boolean {
+  return api === "openai-completions" || api === "openai-responses";
+}
+
+/** Evidence older than this is re-probed rather than reused. */
+export const REASONING_EVIDENCE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Migrate v0.2.x-era reasoning caches into the per-model shape.
+ *
+ * Records WITHOUT an endpointIdentity predate identity tracking: their shape
+ * migrates, but they are flagged degraded so the next refresh re-probes them
+ * (v0.2.x promoted timeouts to acceptances and migration cannot tell which
+ * accepted values were guesses). Records WITH an identity pass untouched.
+ * Anything unreadable is dropped — stale evidence must never
  * masquerade as fresh.
  */
 export function migrateLegacyReasoningCache(previous: unknown): Record<string, ReasoningProbeResult> | undefined {
@@ -294,13 +310,14 @@ export function migrateLegacyReasoningCache(previous: unknown): Record<string, R
   if (typeof previous !== "object") return undefined;
   const record = previous as Record<string, unknown>;
   if (typeof record.probedAt === "string" && typeof record.modelId === "string") {
-    return { [record.modelId]: previous as ReasoningProbeResult };
+    const legacy = previous as ReasoningProbeResult;
+    return { [record.modelId]: legacy.endpointIdentity ? legacy : { ...legacy, degraded: true } };
   }
   const out: Record<string, ReasoningProbeResult> = {};
   for (const [key, value] of Object.entries(record)) {
     const candidate = value as ReasoningProbeResult;
     if (candidate && typeof candidate === "object" && typeof candidate.probedAt === "string" && typeof candidate.modelId === "string") {
-      out[key] = candidate;
+      out[key] = candidate.endpointIdentity ? candidate : { ...candidate, degraded: true };
     }
   }
   return Object.keys(out).length > 0 ? out : undefined;
@@ -329,6 +346,13 @@ export function supportedEffortsFromResult(result: ReasoningProbeResult): { effo
   if (base.size > 0) return { efforts: orderEfforts([...base]), inconclusive: false };
   const cleanlyRejected = result.rejected.length > 0 && result.rejected.every((item) => item.effortRelated);
   const timedOut = result.timedOut ?? [];
-  if (cleanlyRejected && timedOut.length === 0) return { efforts: [], inconclusive: false };
+  if (cleanlyRejected && timedOut.length === 0) {
+    // Non-reasoning is only sound when the probe attempted the full
+    // vocabulary: a restricted candidate set (or a learn-on-failure entry
+    // whose only rejected value is "unknown") proves nothing about the rest.
+    const attempted = new Set([...result.accepted, ...result.rejected.map((item) => item.value), ...timedOut]);
+    const covered = (KNOWN_EFFORTS as readonly string[]).every((value) => attempted.has(value));
+    if (covered) return { efforts: [], inconclusive: false };
+  }
   return { inconclusive: true };
 }

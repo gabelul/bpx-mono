@@ -1,7 +1,7 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { buildParameterCandidates, generatedDefaultModel } from "./candidates.js";
-import { chatCompletionsUrl, effortRelatedRejection, extractSupportedEfforts, migrateLegacyReasoningCache, orderEfforts, PROBE_EFFORT_VALUES, responsesUrl } from "./reasoning.js";
+import { chatCompletionsUrl, effortRelatedRejection, extractSupportedEfforts, migrateLegacyReasoningCache, orderEfforts, PROBE_EFFORT_VALUES, REASONING_EVIDENCE_TTL_MS, responsesUrl } from "./reasoning.js";
 import type { CachedProfile, EndpointDiscoveryResult, EndpointModel, ModelsDevRecord, EndpointProfile, ReasoningProbeResult, RuntimeCapabilities } from "./types.js";
 
 export type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
@@ -361,7 +361,6 @@ async function probeHeaders(profile: EndpointProfile): Promise<Record<string, st
  * force is set. A fatal probe on one model is recorded on that model alone.
  */
 const REASONING_PROBE_MAX_MODELS = 3;
-const REASONING_EVIDENCE_TTL_MS = 24 * 60 * 60 * 1000;
 
 
 async function maybeProbeReasoning(input: {
@@ -379,6 +378,9 @@ async function maybeProbeReasoning(input: {
   const nowMs = (input.now ?? (() => new Date()))().getTime();
   const reasoningModels = Object.values(models)
     .filter((model) => model.available && (model.candidates[0]?.model.reasoning ?? false))
+    // A per-model override can route this model over a different API: probing
+    // it with the profile-API payload would attach wrong-API evidence to it.
+    .filter((model) => (model.candidates[0]?.model.api ?? profile.api) === profile.api)
     .map((model) => model.id)
     .sort();
   if (reasoningModels.length === 0) return {};
@@ -391,11 +393,18 @@ async function maybeProbeReasoning(input: {
     const parsed = Date.parse(cached.probedAt);
     return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
   };
+  let resolvedBaseUrl: string | undefined;
+  try {
+    resolvedBaseUrl = await resolveProfileBaseUrl(profile);
+  } catch {
+    resolvedBaseUrl = undefined;
+  }
   const isUsable = (modelId: string): boolean => {
     const cached = previous?.[modelId];
     if (!cached || input.force) return false;
     if (cached.error || cached.degraded) return false;
     if (!cached.endpointIdentity || cached.endpointIdentity.api !== profile.api) return false;
+    if (resolvedBaseUrl !== undefined && cached.endpointIdentity.baseUrl !== resolvedBaseUrl) return false;
     if (Number.isNaN(Date.parse(cached.probedAt))) return false;
     return nowMs - Date.parse(cached.probedAt) <= REASONING_EVIDENCE_TTL_MS;
   };
