@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/gabelul/bpx-mono/compare/bpx-endpoints-v0.3.1...bpx-endpoints-v0.3.2) (2026-09-27)
+
+
+### Bug Fixes
+
+* **endpoints:** use endpoint model metadata ([88bd85f](https://github.com/gabelul/bpx-mono/commit/88bd85f2fa6c378e6cbdb54ed5dba03433d1740a))
+
 ## [0.3.1](https://github.com/gabelul/bpx-mono/compare/bpx-endpoints-v0.3.0...bpx-endpoints-v0.3.1) (2026-09-25)
 
 
