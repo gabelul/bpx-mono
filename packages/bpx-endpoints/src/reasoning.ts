@@ -38,7 +38,7 @@ export const LEVEL_STRENGTH: Record<PiThinkingLevel, number> = {
   medium: 2,
   high: 3,
   xhigh: 4,
-  max: 4,
+  max: 5,
 };
 
 /**
@@ -49,7 +49,7 @@ export const LEVEL_STRENGTH: Record<PiThinkingLevel, number> = {
  * `medium` would silently change every registered map). `none` and `minimal`
  * slot below `low`; existing low..xhigh keep their historical ranks.
  */
-const EFFORT_STRENGTH: Record<string, number> = { none: 0, minimal: 0.5, low: 1, medium: 2, high: 3, xhigh: 4 };
+const EFFORT_STRENGTH: Record<string, number> = { none: 0, minimal: 0.5, low: 1, medium: 2, high: 3, xhigh: 4, max: 5, ultra: 6 };
 
 /**
  * Canonical complete map used when the endpoint's supported efforts are
@@ -72,7 +72,7 @@ export const CANONICAL_THINKING_LEVEL_MAP: Record<PiThinkingLevel, string> = {
  * is the strongest evidence, but the list can only discover what it tries —
  * `extractSupportedEfforts` catches declared sets that fall outside it.
  */
-export const PROBE_EFFORT_VALUES = ["low", "medium", "high", "xhigh", "minimal", "none"] as const;
+export const PROBE_EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max", "ultra", "minimal", "none"] as const;
 
 export interface ReasoningBuildInput {
   reasoning: boolean;
@@ -191,7 +191,7 @@ export function effortRelatedRejection(body: string): boolean {
 }
 
 /** Wire effort values the miner is allowed to believe. Anything else is noise. */
-const KNOWN_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
+const KNOWN_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
 /**
  * Phrases under which an endpoint is actually DECLARING its accepted set (as

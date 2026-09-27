@@ -78,7 +78,7 @@ describe("supportedEffortsFromResult", () => {
   });
 
   it("empty efforts only when the FULL vocabulary was cleanly effort-rejected", () => {
-    const all = ["none", "minimal", "low", "medium", "high", "xhigh"];
+    const all = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
     const full: ReasoningProbeResult = {
       probedAt: "2026-09-25T00:00:00Z",
       modelId: "m",
@@ -110,7 +110,7 @@ describe("supportedEffortsFromResult", () => {
 
 describe("nearestEffortMap — frozen strength ranks", () => {
   it("maps historical accepted sets exactly as v0.2.x did", () => {
-    // low=1, medium=2, high=3, xhigh=4 are frozen API; adding none/minimal below
+    // low=1, medium=2, high=3, xhigh=4 are frozen API; adding none/minimal/max/ultra
     // must not shift any existing mapping.
     expect(nearestEffortMap(["low", "medium", "high"])).toEqual({
       off: "low",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { discoveryUrls, fetchWithRetry, parseEndpointModels, ProbeWorthyError, discoverEndpointModels, resolveProfileBaseUrl } from "../src/refresh.js";
-import type { EndpointProfile } from "../src/types.js";
+import { discoveryUrls, fetchWithRetry, parseEndpointModels, ProbeWorthyError, discoverEndpointModels, resolveProfileBaseUrl, refreshProfileCache } from "../src/refresh.js";
+import type { EndpointProfile, RuntimeCapabilities } from "../src/types.js";
 
 function profile(overrides: Partial<EndpointProfile> = {}): EndpointProfile {
   return {
@@ -33,6 +33,11 @@ describe("parseEndpointModels", () => {
   it("parses { data: [...] }", () => {
     const result = parseEndpointModels({ data: [{ id: "gpt-4" }] });
     expect(result.models[0]!.id).toBe("gpt-4");
+  });
+
+  it("preserves endpoint metadata for parameter generation", () => {
+    const result = parseEndpointModels({ data: [{ id: "codex-auto-review", metadata: { context_window: 272000 } }] });
+    expect(result.models[0]!.metadata).toEqual({ context_window: 272000 });
   });
 
   it("parses { models: [...] } (Ollama /api/tags style)", () => {
@@ -162,6 +167,96 @@ describe("discoverEndpointModels", () => {
     const fetcher = async () => jsonResponse({ models: [] });
     const result = await discoverEndpointModels(profile({ discovery: { mode: "endpoint", modelsPath: "/models", modelsUrl: "http://host:11434/api/tags", probe: true } }), fetcher);
     expect(result.discoveryUrl).toBe("http://host:11434/api/tags");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refreshProfileCache — endpoint metadata candidates
+// ---------------------------------------------------------------------------
+
+describe("refreshProfileCache", () => {
+  it("uses /models metadata as a candidate before generated defaults", async () => {
+    const runtime: RuntimeCapabilities = { adapters: ["openai-completions"], builtInModels: [] };
+    const cached = await refreshProfileCache({
+      profile: profile(),
+      runtime,
+      modelsDevModels: [],
+      discoveryResult: {
+        warnings: [],
+        models: [
+          {
+            id: "codex-auto-review",
+            metadata: {
+              display_name: "Codex Auto Review",
+              context_window: 272000,
+              input_modalities: ["text", "image"],
+              supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }, { effort: "xhigh" }, { effort: "max" }],
+            },
+          },
+        ],
+      },
+    });
+    const candidate = cached.models["codex-auto-review"]!.candidates[0]!;
+    expect(candidate.sourceType).toBe("endpoint-metadata");
+    expect(candidate.model.contextWindow).toBe(272000);
+    expect(candidate.model.input).toEqual(["text", "image"]);
+    expect(candidate.model.reasoning).toBe(true);
+    expect(candidate.model.thinkingLevelMap?.max).toBe("max");
+  });
+
+  it("keeps exact priced catalog sources ahead of endpoint metadata", async () => {
+    const runtime: RuntimeCapabilities = { adapters: ["openai-completions"], builtInModels: [] };
+    const cached = await refreshProfileCache({
+      profile: profile(),
+      runtime,
+      modelsDevModels: [
+        {
+          provider: "xai",
+          id: "grok-4.7",
+          name: "Grok 4.7",
+          reasoning: true,
+          input: ["text", "image"],
+          cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
+          contextWindow: 500000,
+          maxTokens: 16384,
+        },
+      ],
+      discoveryResult: {
+        warnings: [],
+        models: [{ id: "grok-4.7", metadata: { context_window: 500000, supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }] } }],
+      },
+    });
+    const candidate = cached.models["grok-4.7"]!.candidates[0]!;
+    expect(candidate.sourceType).toBe("models.dev");
+    expect(candidate.model.cost.input).toBe(3);
+  });
+
+  it("keeps fuzzy priced catalog sources ahead of endpoint metadata", async () => {
+    const runtime: RuntimeCapabilities = { adapters: ["openai-completions"], builtInModels: [] };
+    const cached = await refreshProfileCache({
+      profile: profile(),
+      runtime,
+      modelsDevModels: [
+        {
+          provider: "xai",
+          id: "grok-imagine-image",
+          name: "Grok Imagine Image",
+          reasoning: false,
+          input: ["text", "image"],
+          cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 16000,
+          maxTokens: 4096,
+        },
+      ],
+      discoveryResult: {
+        warnings: [],
+        models: [{ id: "grok-imagine-image-edit", metadata: { context_window: 128000 } }],
+      },
+    });
+    const candidate = cached.models["grok-imagine-image-edit"]!.candidates[0]!;
+    expect(candidate.sourceType).toBe("models.dev");
+    expect(candidate.match).toBe("fuzzy");
+    expect(candidate.model.cost.input).toBe(1);
   });
 });
 

@@ -454,6 +454,7 @@ export async function refreshProfileCache(input: {
   for (const endpointModel of endpointModels) {
     const candidates = buildParameterCandidates({
       endpointModelId: endpointModel.id,
+      endpointModel,
       api: input.profile.api,
       builtInModels: input.runtime.builtInModels,
       modelsDevModels: input.modelsDevModels,
@@ -557,7 +558,12 @@ function parseEndpointModel(entry: { id?: string; value: unknown }): EndpointMod
   if (!isRecord(value)) return keyedId?.trim() ? { id: keyedId } : undefined;
   const id = keyedId?.trim() || firstNonEmptyString(value.id, value.model, value.name);
   if (!id) return undefined;
-  return { id, name: typeof value.name === "string" && value.name.trim() ? value.name : undefined, available: typeof value.available === "boolean" ? value.available : undefined };
+  return {
+    id,
+    name: typeof value.name === "string" && value.name.trim() ? value.name : undefined,
+    available: typeof value.available === "boolean" ? value.available : undefined,
+    metadata: isRecord(value.metadata) ? value.metadata : undefined,
+  };
 }
 
 function objectEntries(record: Record<string, unknown>): Array<{ id: string; value: unknown }> {

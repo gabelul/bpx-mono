@@ -145,6 +145,7 @@ export interface EndpointModel {
   id: string;
   name?: string;
   available?: boolean;
+  metadata?: Record<string, unknown>;
 }
 
 export interface EndpointDiscoveryResult {
@@ -168,7 +169,7 @@ export interface ProfileHealth {
   lastError?: string;
 }
 
-export type ParameterSourceType = "pi-built-in" | "models.dev" | "generated-default";
+export type ParameterSourceType = "pi-built-in" | "models.dev" | "endpoint-metadata" | "generated-default";
 export type MatchKind = "exact" | "normalized" | "fuzzy" | "none";
 
 export interface ParameterSourceCandidate {

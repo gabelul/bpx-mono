@@ -138,7 +138,7 @@ describe("generateModelsConfig reasoning policy", () => {
     const model = builtInModel("qwen-27b");
     const probe = reasoningProbe(
       [],
-      ["none", "minimal", "low", "medium", "high", "xhigh"].map((value) => ({
+      ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].map((value) => ({
         value,
         status: 400,
         detail: "Unexpected reasoning effort low.",
@@ -198,7 +198,7 @@ describe("v0.3.0 policy: per-model evidence, responses coverage, null precedence
 
   function probeEvidence(modelId: string, accepted: string[]): ReasoningProbeResult {
     return {
-      probedAt: "2026-09-25T00:00:00.000Z",
+      probedAt: new Date().toISOString(),
       modelId,
       accepted,
       rejected: [],
@@ -287,7 +287,7 @@ describe("v0.3.0 policy: per-model evidence, responses coverage, null precedence
     const model = builtInModel("qwen-27b");
     const evidence: Record<string, ReasoningProbeResult> = {
       "qwen-27b": {
-        probedAt: "2026-09-25T00:00:00.000Z",
+        probedAt: new Date().toISOString(),
         modelId: "qwen-27b",
         accepted: ["low"],
         rejected: [{ value: "minimal", status: 400, detail: HYPERQWEN_LIKE, effortRelated: true }],
